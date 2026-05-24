@@ -2,10 +2,14 @@
 
 import { useMemo, useRef, useState } from "react";
 
+type AttendanceStatus = "未回答" | "参加" | "不参加";
+type DriverAvailabilityStatus = "未回答" | "配車可" | "配車不可";
+
 type GuardianInput = {
   id: number;
   name: string;
   capacity: string;
+  availability: DriverAvailabilityStatus;
 };
 
 type Player = {
@@ -14,6 +18,7 @@ type Player = {
   grade: string;
   siblingGroup: string;
   parentGuardianName: string;
+  attendance: AttendanceStatus;
 };
 
 type StaffRole = "監督" | "コーチ";
@@ -22,6 +27,7 @@ type StaffMember = {
   id: number;
   name: string;
   role: StaffRole;
+  attendance: AttendanceStatus;
 };
 
 type AllocationResult = {
@@ -46,9 +52,6 @@ type StaffDraft = {
 
 const normalizeText = (value: string) => value.trim().toLowerCase();
 
-const toggleId = (list: number[], id: number) =>
-  list.includes(id) ? list.filter((item) => item !== id) : [...list, id];
-
 const getCarLoad = (car: AllocationResult) => car.players.length + car.staff.length;
 
 const getRemainingSeats = (car: AllocationResult) => car.capacity - getCarLoad(car);
@@ -70,16 +73,14 @@ export default function Home() {
   const [destination, setDestination] = useState("");
 
   const [guardians, setGuardians] = useState<GuardianInput[]>([
-    { id: 1, name: "", capacity: "4" },
+    { id: 1, name: "", capacity: "4", availability: "未回答" },
   ]);
 
   const [playerMaster, setPlayerMaster] = useState<Player[]>([]);
   const [playerDraft, setPlayerDraft] = useState<PlayerDraft>(INITIAL_PLAYER_DRAFT);
-  const [participatingPlayerIds, setParticipatingPlayerIds] = useState<number[]>([]);
 
   const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
   const [staffDraft, setStaffDraft] = useState<StaffDraft>(INITIAL_STAFF_DRAFT);
-  const [participatingStaffIds, setParticipatingStaffIds] = useState<number[]>([]);
 
   const [allocation, setAllocation] = useState<AllocationResult[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
@@ -89,10 +90,25 @@ export default function Home() {
   const playerIdRef = useRef(1);
   const staffIdRef = useRef(1);
 
+  const participatingPlayers = useMemo(
+    () => playerMaster.filter((player) => player.attendance === "参加"),
+    [playerMaster],
+  );
+
+  const participatingStaff = useMemo(
+    () => staffMembers.filter((staff) => staff.attendance === "参加"),
+    [staffMembers],
+  );
+
   const addGuardian = () => {
     setGuardians((prev) => [
       ...prev,
-      { id: guardianIdRef.current, name: "", capacity: "4" },
+      {
+        id: guardianIdRef.current,
+        name: "",
+        capacity: "4",
+        availability: "未回答",
+      },
     ]);
     guardianIdRef.current += 1;
   };
@@ -134,6 +150,7 @@ export default function Home() {
         grade,
         siblingGroup: playerDraft.siblingGroup.trim(),
         parentGuardianName: playerDraft.parentGuardianName.trim(),
+        attendance: "未回答",
       },
     ]);
     playerIdRef.current += 1;
@@ -142,11 +159,14 @@ export default function Home() {
 
   const removePlayer = (id: number) => {
     setPlayerMaster((prev) => prev.filter((player) => player.id !== id));
-    setParticipatingPlayerIds((prev) => prev.filter((playerId) => playerId !== id));
   };
 
-  const togglePlayerParticipation = (id: number) => {
-    setParticipatingPlayerIds((prev) => toggleId(prev, id));
+  const updatePlayerAttendance = (id: number, status: AttendanceStatus) => {
+    setPlayerMaster((prev) =>
+      prev.map((player) =>
+        player.id === id ? { ...player, attendance: status } : player,
+      ),
+    );
   };
 
   const registerStaff = () => {
@@ -164,6 +184,7 @@ export default function Home() {
         id: staffIdRef.current,
         name,
         role: staffDraft.role,
+        attendance: "未回答",
       },
     ]);
     staffIdRef.current += 1;
@@ -172,19 +193,24 @@ export default function Home() {
 
   const removeStaff = (id: number) => {
     setStaffMembers((prev) => prev.filter((staff) => staff.id !== id));
-    setParticipatingStaffIds((prev) => prev.filter((staffId) => staffId !== id));
   };
 
-  const toggleStaffParticipation = (id: number) => {
-    setParticipatingStaffIds((prev) => toggleId(prev, id));
+  const updateStaffAttendance = (id: number, status: AttendanceStatus) => {
+    setStaffMembers((prev) =>
+      prev.map((staff) => (staff.id === id ? { ...staff, attendance: status } : staff)),
+    );
   };
 
   const handleAutoAllocate = () => {
     setErrorMessage("");
     setCopyMessage("");
 
-    const normalizedGuardians: { id: number; name: string; capacity: number }[] = [];
-    const guardianNameToIndex = new Map<string, number>();
+    const normalizedGuardians: {
+      id: number;
+      name: string;
+      capacity: number;
+      availability: DriverAvailabilityStatus;
+    }[] = [];
 
     // 車情報の入力を検証し、配車に使う形式へ変換します。
     for (const guardian of guardians) {
@@ -208,39 +234,45 @@ export default function Home() {
         return;
       }
 
-      const normalizedName = normalizeText(name);
+      normalizedGuardians.push({
+        id: guardian.id,
+        name,
+        capacity,
+        availability: guardian.availability,
+      });
+    }
+
+    const availableGuardians = normalizedGuardians.filter(
+      (guardian) => guardian.availability === "配車可",
+    );
+
+    if (availableGuardians.length === 0) {
+      setAllocation([]);
+      setErrorMessage("配車可能（配車可）の保護者を1名以上設定してください。");
+      return;
+    }
+
+    const guardianNameToIndex = new Map<string, number>();
+    for (const guardian of availableGuardians) {
+      const normalizedName = normalizeText(guardian.name);
       if (guardianNameToIndex.has(normalizedName)) {
         setAllocation([]);
-        setErrorMessage("保護者名が重複しています。重複しない名前にしてください。");
+        setErrorMessage(
+          "配車可の保護者名が重複しています。重複しない名前にしてください。",
+        );
         return;
       }
-
-      guardianNameToIndex.set(normalizedName, normalizedGuardians.length);
-      normalizedGuardians.push({ id: guardian.id, name, capacity });
+      guardianNameToIndex.set(normalizedName, guardianNameToIndex.size);
     }
 
-    if (normalizedGuardians.length === 0) {
+    if (participatingPlayers.length === 0 && participatingStaff.length === 0) {
       setAllocation([]);
-      setErrorMessage("車を出せる保護者を1名以上入力してください。");
+      setErrorMessage("参加者がいません。選手・監督・コーチの参加可否を入力してください。");
       return;
     }
 
-    const playerIdSet = new Set(participatingPlayerIds);
-    const staffIdSet = new Set(participatingStaffIds);
-
-    const participantPlayers = playerMaster.filter((player) =>
-      playerIdSet.has(player.id),
-    );
-    const participantStaff = staffMembers.filter((staff) => staffIdSet.has(staff.id));
-
-    if (participantPlayers.length === 0 && participantStaff.length === 0) {
-      setAllocation([]);
-      setErrorMessage("参加者が選択されていません。選手または監督・コーチを選択してください。");
-      return;
-    }
-
-    const totalPassengers = participantPlayers.length + participantStaff.length;
-    const totalCapacity = normalizedGuardians.reduce(
+    const totalPassengers = participatingPlayers.length + participatingStaff.length;
+    const totalCapacity = availableGuardians.reduce(
       (sum, guardian) => sum + guardian.capacity,
       0,
     );
@@ -253,7 +285,7 @@ export default function Home() {
       return;
     }
 
-    const cars: AllocationResult[] = normalizedGuardians.map((guardian) => ({
+    const cars: AllocationResult[] = availableGuardians.map((guardian) => ({
       id: guardian.id,
       guardianName: guardian.name,
       capacity: guardian.capacity,
@@ -319,7 +351,7 @@ export default function Home() {
     const siblingUnits = new Map<string, Player[]>();
     const individualUnits: Player[][] = [];
 
-    for (const player of participantPlayers) {
+    for (const player of participatingPlayers) {
       const siblingKey = normalizeText(player.siblingGroup);
       if (!siblingKey) {
         individualUnits.push([player]);
@@ -387,7 +419,7 @@ export default function Home() {
     }
 
     // 監督・コーチは選手とは別枠で割当し、できるだけ選手の少ない車へ配車します。
-    for (const staff of participantStaff) {
+    for (const staff of participatingStaff) {
       const candidateCars = cars
         .map((car, carIndex) => {
           const remaining = getRemainingSeats(car);
@@ -428,7 +460,7 @@ export default function Home() {
       "",
       `遠征名: ${expeditionName.trim() || "未入力"}`,
       `目的地: ${destination.trim() || "未入力"}`,
-      `参加選手: ${participatingPlayerIds.length}名 / 監督・コーチ: ${participatingStaffIds.length}名`,
+      `参加選手: ${participatingPlayers.length}名 / 監督・コーチ: ${participatingStaff.length}名`,
       "",
     ];
 
@@ -459,13 +491,7 @@ export default function Home() {
     });
 
     return lines.join("\n");
-  }, [
-    allocation,
-    expeditionName,
-    destination,
-    participatingPlayerIds.length,
-    participatingStaffIds.length,
-  ]);
+  }, [allocation, expeditionName, destination, participatingPlayers.length, participatingStaff.length]);
 
   const handleCopyShareText = async () => {
     if (!lineShareText) {
@@ -490,7 +516,7 @@ export default function Home() {
             少年野球 遠征配車アプリ
           </h1>
           <p className="text-sm leading-relaxed text-slate-600">
-            選手登録・参加確認・自動配車をスマホで完結できます。
+            チームメンバーの出欠回答をそのまま配車に反映できます。
           </p>
         </header>
 
@@ -520,56 +546,83 @@ export default function Home() {
 
         <section className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">保護者の車（運転手）</h2>
+            <h2 className="text-lg font-semibold">保護者（運転手）出欠管理</h2>
             <button
               type="button"
               onClick={addGuardian}
               className="min-h-11 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 active:bg-emerald-700"
             >
-              + 車を追加
+              + 保護者を追加
             </button>
           </div>
+
+          <p className="text-xs text-slate-600">
+            「配車可」を選んだ保護者だけが自動配車の対象になります。
+          </p>
 
           <div className="space-y-3">
             {guardians.map((guardian) => (
               <div
                 key={guardian.id}
-                className="grid gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:grid-cols-[1fr_120px_auto]"
+                className="space-y-2 rounded-xl border border-slate-200 bg-white p-3"
               >
-                <input
-                  type="text"
-                  value={guardian.name}
-                  onChange={(event) =>
-                    updateGuardian(guardian.id, "name", event.target.value)
-                  }
-                  placeholder="保護者名"
-                  className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                />
-                <input
-                  type="number"
-                  min={1}
-                  value={guardian.capacity}
-                  onChange={(event) =>
-                    updateGuardian(guardian.id, "capacity", event.target.value)
-                  }
-                  placeholder="定員"
-                  className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                />
-                <button
-                  type="button"
-                  onClick={() => removeGuardian(guardian.id)}
-                  className="min-h-11 rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
-                  disabled={guardians.length === 1}
-                >
-                  削除
-                </button>
+                <div className="grid gap-2 sm:grid-cols-[1fr_120px_auto]">
+                  <input
+                    type="text"
+                    value={guardian.name}
+                    onChange={(event) =>
+                      updateGuardian(guardian.id, "name", event.target.value)
+                    }
+                    placeholder="保護者名"
+                    className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    value={guardian.capacity}
+                    onChange={(event) =>
+                      updateGuardian(guardian.id, "capacity", event.target.value)
+                    }
+                    placeholder="定員"
+                    className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeGuardian(guardian.id)}
+                    className="min-h-11 rounded-xl border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={guardians.length === 1}
+                  >
+                    削除
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  {(["未回答", "配車可", "配車不可"] as const).map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => updateGuardian(guardian.id, "availability", status)}
+                      className={`min-h-10 rounded-xl border text-xs font-semibold ${
+                        guardian.availability === status
+                          ? status === "配車可"
+                            ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                            : status === "配車不可"
+                              ? "border-rose-300 bg-rose-50 text-rose-800"
+                              : "border-slate-300 bg-slate-100 text-slate-800"
+                          : "border-slate-200 bg-white text-slate-600"
+                      }`}
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
         </section>
 
         <section className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
-          <h2 className="text-lg font-semibold">選手登録（タップで参加確認）</h2>
+          <h2 className="text-lg font-semibold">選手出欠管理</h2>
 
           <div className="grid gap-2 sm:grid-cols-2">
             <input
@@ -625,54 +678,64 @@ export default function Home() {
           </button>
 
           <p className="text-sm font-medium text-slate-700">
-            参加予定選手: {participatingPlayerIds.length}名（名前をタップで参加/不参加）
+            参加選手: {participatingPlayers.length}名（未回答/参加/不参加を入力）
           </p>
 
           {playerMaster.length === 0 ? (
             <p className="text-sm text-slate-500">まだ選手が登録されていません。</p>
           ) : (
             <div className="space-y-2">
-              {playerMaster.map((player) => {
-                const isParticipating = participatingPlayerIds.includes(player.id);
-
-                return (
-                  <div
-                    key={player.id}
-                    className="flex items-stretch gap-2 rounded-xl border border-slate-200 bg-white p-2"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => togglePlayerParticipation(player.id)}
-                      className={`flex-1 rounded-xl px-3 py-3 text-left text-sm transition ${
-                        isParticipating
-                          ? "bg-blue-50 text-blue-900 ring-1 ring-blue-200"
-                          : "bg-slate-50 text-slate-700"
-                      }`}
-                    >
-                      <p className="font-semibold">
+              {playerMaster.map((player) => (
+                <div
+                  key={player.id}
+                  className="space-y-2 rounded-xl border border-slate-200 bg-white p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900">
                         {player.name} ({player.grade})
                       </p>
                       <p className="mt-1 text-xs text-slate-600">
                         兄弟: {player.siblingGroup || "なし"} / 保護者: {player.parentGuardianName || "未設定"}
                       </p>
-                    </button>
-
+                    </div>
                     <button
                       type="button"
                       onClick={() => removePlayer(player.id)}
-                      className="min-h-11 rounded-xl border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                      className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
                     >
                       削除
                     </button>
                   </div>
-                );
-              })}
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {(["未回答", "参加", "不参加"] as const).map((status) => (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => updatePlayerAttendance(player.id, status)}
+                        className={`min-h-10 rounded-xl border text-xs font-semibold ${
+                          player.attendance === status
+                            ? status === "参加"
+                              ? "border-blue-300 bg-blue-50 text-blue-800"
+                              : status === "不参加"
+                                ? "border-rose-300 bg-rose-50 text-rose-800"
+                                : "border-slate-300 bg-slate-100 text-slate-800"
+                            : "border-slate-200 bg-white text-slate-600"
+                        }`}
+                      >
+                        {status}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </section>
 
         <section className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
-          <h2 className="text-lg font-semibold">監督・コーチ（選手とは別管理）</h2>
+          <h2 className="text-lg font-semibold">監督・コーチ出欠管理</h2>
 
           <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
             <input
@@ -708,45 +771,53 @@ export default function Home() {
           </button>
 
           <p className="text-sm font-medium text-slate-700">
-            参加予定監督・コーチ: {participatingStaffIds.length}名（名前をタップで参加/不参加）
+            参加監督・コーチ: {participatingStaff.length}名（未回答/参加/不参加を入力）
           </p>
 
           {staffMembers.length === 0 ? (
             <p className="text-sm text-slate-500">まだ監督・コーチが登録されていません。</p>
           ) : (
             <div className="space-y-2">
-              {staffMembers.map((staff) => {
-                const isParticipating = participatingStaffIds.includes(staff.id);
-
-                return (
-                  <div
-                    key={staff.id}
-                    className="flex items-stretch gap-2 rounded-xl border border-slate-200 bg-white p-2"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => toggleStaffParticipation(staff.id)}
-                      className={`flex-1 rounded-xl px-3 py-3 text-left text-sm transition ${
-                        isParticipating
-                          ? "bg-amber-50 text-amber-900 ring-1 ring-amber-200"
-                          : "bg-slate-50 text-slate-700"
-                      }`}
-                    >
-                      <p className="font-semibold">
-                        {staff.role} {staff.name}
-                      </p>
-                    </button>
-
+              {staffMembers.map((staff) => (
+                <div
+                  key={staff.id}
+                  className="space-y-2 rounded-xl border border-slate-200 bg-white p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-900">
+                      {staff.role} {staff.name}
+                    </p>
                     <button
                       type="button"
                       onClick={() => removeStaff(staff.id)}
-                      className="min-h-11 rounded-xl border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                      className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
                     >
                       削除
                     </button>
                   </div>
-                );
-              })}
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {(["未回答", "参加", "不参加"] as const).map((status) => (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => updateStaffAttendance(staff.id, status)}
+                        className={`min-h-10 rounded-xl border text-xs font-semibold ${
+                          staff.attendance === status
+                            ? status === "参加"
+                              ? "border-amber-300 bg-amber-50 text-amber-800"
+                              : status === "不参加"
+                                ? "border-rose-300 bg-rose-50 text-rose-800"
+                                : "border-slate-300 bg-slate-100 text-slate-800"
+                            : "border-slate-200 bg-white text-slate-600"
+                        }`}
+                      >
+                        {status}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </section>
@@ -756,7 +827,7 @@ export default function Home() {
           onClick={handleAutoAllocate}
           className="min-h-12 w-full rounded-2xl bg-blue-600 px-4 py-3 text-base font-bold text-white shadow-sm hover:bg-blue-500 active:bg-blue-700"
         >
-          自動配車する
+          出欠回答を反映して自動配車する
         </button>
 
         {errorMessage && (
