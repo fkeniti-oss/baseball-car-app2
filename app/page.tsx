@@ -1,1508 +1,1297 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { getSupabaseClient } from "@/lib/supabase/client";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
+import type {
+  AllocationRow,
+  AttendanceRow,
+  AttendanceStatus,
+  EventRow,
+  EventType,
+  GuardianRow,
+  PlayerRow
+} from "@/lib/types/database";
 
-type AttendanceStatus = "未回答" | "参加" | "不参加";
-type DriverAvailabilityStatus = "未回答" | "配車可" | "配車不可";
-type ViewMode = "guardian" | "admin";
-
-type GuardianInput = {
-  id: number;
-  name: string;
-  capacity: string;
-  availability: DriverAvailabilityStatus;
+type Screen = "login" | "home" | "events" | "parent" | "carpool" | "summary";
+type AutoAssignOptions = {
+  preferSameGrade: boolean;
+  keepSiblingsTogether: boolean;
+  rideWithParentDriver: boolean;
 };
 
-type Player = {
-  id: number;
-  name: string;
-  grade: string;
-  siblingGroup: string;
-  parentGuardianName: string;
-  attendance: AttendanceStatus;
+const statusStyles: Record<AttendanceStatus, string> = {
+  "参加": "bg-field text-white border-field",
+  "欠席": "bg-white text-rose-700 border-rose-200",
+  "遅刻": "bg-amber-100 text-amber-900 border-amber-200",
+  "未回答": "bg-white text-slate-500 border-slate-200"
 };
 
-type StaffRole = "監督" | "コーチ";
-
-type StaffMember = {
-  id: number;
-  name: string;
-  role: StaffRole;
-  attendance: AttendanceStatus;
+const initialEventForm = {
+  title: "",
+  eventType: "遠征" as EventType,
+  startsAt: "",
+  place: ""
 };
 
-type AllocationResult = {
-  id: number;
-  guardianName: string;
-  capacity: number;
-  players: Player[];
-  staff: StaffMember[];
+const initialParentForm = {
+  guardianId: "",
+  playerId: "",
+  status: "参加" as AttendanceStatus,
+  canDrive: false,
+  driverName: "",
+  capacity: "4",
+  note: ""
 };
 
-type PlayerDraft = {
-  name: string;
-  grade: string;
-  siblingGroup: string;
-  parentGuardianName: string;
+const appBackgroundStyle = {
+  backgroundImage:
+    "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(247,244,234,0.96)), radial-gradient(circle at top left, rgba(40,116,90,0.12), transparent 32rem)"
 };
 
-type StaffDraft = {
-  name: string;
-  role: StaffRole;
-};
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("ja-JP", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
 
-const ATTENDANCE_OPTIONS: AttendanceStatus[] = ["未回答", "参加", "不参加"];
-const DRIVER_OPTIONS: DriverAvailabilityStatus[] = ["未回答", "配車可", "配車不可"];
+function getPlayer(players: PlayerRow[], playerId: string) {
+  return players.find((player) => player.id === playerId);
+}
 
-const normalizeText = (value: string) => value.trim().toLowerCase();
+function getGuardian(guardians: GuardianRow[], guardianId: string | null) {
+  return guardians.find((guardian) => guardian.id === guardianId);
+}
 
-const getCarLoad = (car: AllocationResult) => car.players.length + car.staff.length;
+function isParentDriver(car: AllocationRow, player: PlayerRow) {
+  return (
+    car.driver_name.includes(player.name) ||
+    car.driver_name.includes(player.parent_name) ||
+    player.parent_name.includes(car.driver_name)
+  );
+}
 
-const getRemainingSeats = (car: AllocationResult) => car.capacity - getCarLoad(car);
+function splitIntoGroups(players: PlayerRow[], options: AutoAssignOptions) {
+  if (!options.keepSiblingsTogether) {
+    return players.map((player) => [player]);
+  }
 
-const cloneAllocation = (allocation: AllocationResult[]) =>
-  allocation.map((car) => ({
-    ...car,
-    players: [...car.players],
-    staff: [...car.staff],
-  }));
+  const groups = players.reduce<Record<string, PlayerRow[]>>((result, player) => {
+    result[player.family_group] = [...(result[player.family_group] ?? []), player];
+    return result;
+  }, {});
 
-const INITIAL_PLAYER_DRAFT: PlayerDraft = {
-  name: "",
-  grade: "",
-  siblingGroup: "",
-  parentGuardianName: "",
-};
+  return Object.values(groups).sort((a, b) => b.length - a.length);
+}
 
-const INITIAL_STAFF_DRAFT: StaffDraft = {
-  name: "",
-  role: "監督",
-};
+function findBestCarIndex(
+  cars: AllocationRow[],
+  group: PlayerRow[],
+  players: PlayerRow[],
+  options: AutoAssignOptions
+) {
+  const groupGrades = new Set(group.map((player) => player.grade));
+
+  const scored = cars
+    .map((car, index) => {
+      const remainingSeats = car.capacity - car.player_ids.length;
+      if (remainingSeats < group.length) return null;
+
+      const driverScore =
+        options.rideWithParentDriver &&
+        group.some((player) => isParentDriver(car, player))
+          ? 100
+          : 0;
+      const gradeScore =
+        options.preferSameGrade &&
+        car.player_ids.some((playerId) => {
+          const player = getPlayer(players, playerId);
+          return player ? groupGrades.has(player.grade) : false;
+        })
+          ? 20
+          : 0;
+      const emptyBonus = car.player_ids.length === 0 ? 5 : 0;
+
+      return { index, score: driverScore + gradeScore + emptyBonus + remainingSeats / 10 };
+    })
+    .filter((item): item is { index: number; score: number } => item !== null)
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0]?.index ?? -1;
+}
+
+function createAutoAssignedCars(
+  baseCars: AllocationRow[],
+  targetPlayers: PlayerRow[],
+  allPlayers: PlayerRow[],
+  options: AutoAssignOptions
+) {
+  const emptyCars = baseCars.map((car) => ({ ...car, player_ids: [] as string[] }));
+  const sortedPlayers = [...targetPlayers].sort(
+    (a, b) => b.grade - a.grade || a.name.localeCompare(b.name, "ja")
+  );
+  const groups = splitIntoGroups(sortedPlayers, options);
+  const remainingGroups: PlayerRow[][] = [];
+
+  groups.forEach((group) => {
+    const carIndex = options.rideWithParentDriver
+      ? emptyCars.findIndex(
+          (car) =>
+            group.some((player) => isParentDriver(car, player)) &&
+            car.capacity - car.player_ids.length >= group.length
+        )
+      : -1;
+
+    if (carIndex >= 0) {
+      emptyCars[carIndex].player_ids.push(...group.map((player) => player.id));
+      return;
+    }
+
+    remainingGroups.push(group);
+  });
+
+  remainingGroups.forEach((group) => {
+    const carIndex = findBestCarIndex(emptyCars, group, allPlayers, options);
+    if (carIndex >= 0) {
+      emptyCars[carIndex].player_ids.push(...group.map((player) => player.id));
+    }
+  });
+
+  return emptyCars;
+}
 
 export default function Home() {
-  const [viewMode, setViewMode] = useState<ViewMode>("guardian");
-  const [adminEmailInput, setAdminEmailInput] = useState(
-    process.env.NEXT_PUBLIC_ADMIN_EMAIL ?? "",
-  );
-  const [adminPasswordInput, setAdminPasswordInput] = useState("");
-  const [adminUserEmail, setAdminUserEmail] = useState<string | null>(null);
-  const [isAuthLoading, setIsAuthLoading] = useState(
+  const [screen, setScreen] = useState<Screen>("login");
+  const [adminEmail, setAdminEmail] = useState("manager@example.com");
+  const [password, setPassword] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [guardians, setGuardians] = useState<GuardianRow[]>([]);
+  const [players, setPlayers] = useState<PlayerRow[]>([]);
+  const [attendance, setAttendance] = useState<AttendanceRow[]>([]);
+  const [allocations, setAllocations] = useState<AllocationRow[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState("");
+  const [selectedGuardianId, setSelectedGuardianId] = useState("");
+  const [eventForm, setEventForm] = useState(initialEventForm);
+  const [parentForm, setParentForm] = useState(initialParentForm);
+  const [carForm, setCarForm] = useState({
+    driverName: "",
+    carName: "",
+    capacity: "4"
+  });
+  const [autoAssignOptions, setAutoAssignOptions] = useState<AutoAssignOptions>({
+    preferSameGrade: true,
+    keepSiblingsTogether: true,
+    rideWithParentDriver: true
+  });
+
+  const selectedEvent = events.find((event) => event.id === selectedEventId);
+  const isParentLinkMode =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("mode") === "parent";
+  const eventAttendance = useMemo(
     () =>
-      Boolean(
-        process.env.NEXT_PUBLIC_SUPABASE_URL &&
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-      ),
+      selectedEvent
+        ? attendance.filter((row) => row.event_id === selectedEvent.id)
+        : [],
+    [attendance, selectedEvent]
   );
-
-  const [expeditionName, setExpeditionName] = useState("");
-  const [destination, setDestination] = useState("");
-
-  const [guardians, setGuardians] = useState<GuardianInput[]>([
-    { id: 1, name: "", capacity: "4", availability: "未回答" },
-  ]);
-
-  const [playerMaster, setPlayerMaster] = useState<Player[]>([]);
-  const [playerDraft, setPlayerDraft] = useState<PlayerDraft>(INITIAL_PLAYER_DRAFT);
-
-  const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
-  const [staffDraft, setStaffDraft] = useState<StaffDraft>(INITIAL_STAFF_DRAFT);
-
-  const [selectedGuardianId, setSelectedGuardianId] = useState<number | "">("");
-
-  const [allocation, setAllocation] = useState<AllocationResult[]>([]);
-  const [isAllocationEditMode, setIsAllocationEditMode] = useState(false);
-  const [isAllocationConfirmed, setIsAllocationConfirmed] = useState(false);
-
-  const [errorMessage, setErrorMessage] = useState("");
-  const [copyMessage, setCopyMessage] = useState("");
-
-  const guardianIdRef = useRef(2);
-  const playerIdRef = useRef(1);
-  const staffIdRef = useRef(1);
-  const supabase = useMemo(() => getSupabaseClient(), []);
-
-  const normalizedAdminEmail = normalizeText(
-    process.env.NEXT_PUBLIC_ADMIN_EMAIL ?? "",
-  );
-  const normalizedAdminUserEmail = adminUserEmail
-    ? normalizeText(adminUserEmail)
-    : "";
-  const isAdminAuthenticated = adminUserEmail !== null;
-  const isAdminAuthorized =
-    normalizedAdminEmail !== "" && normalizedAdminUserEmail === normalizedAdminEmail;
-  const isSupabaseConfigured = supabase !== null;
-
-  const namedGuardians = useMemo(
-    () => guardians.filter((guardian) => guardian.name.trim() !== ""),
-    [guardians],
-  );
-
-  const participatingPlayers = useMemo(
-    () => playerMaster.filter((player) => player.attendance === "参加"),
-    [playerMaster],
-  );
-
-  const participatingStaff = useMemo(
-    () => staffMembers.filter((staff) => staff.attendance === "参加"),
-    [staffMembers],
-  );
-
-  const effectiveSelectedGuardianId = useMemo(() => {
-    if (namedGuardians.length === 0) return "";
-
-    const exists =
-      selectedGuardianId !== "" &&
-      namedGuardians.some((guardian) => guardian.id === selectedGuardianId);
-
-    if (exists) return selectedGuardianId;
-    return namedGuardians[0].id;
-  }, [namedGuardians, selectedGuardianId]);
-
-  const selectedGuardian = useMemo(
+  const eventAllocations = selectedEvent
+    ? allocations
+        .filter((row) => row.event_id === selectedEvent.id)
+        .sort((a, b) => a.sort_order - b.sort_order)
+    : [];
+  const selectedGuardian = guardians.find((guardian) => guardian.id === selectedGuardianId);
+  const guardianPlayers = useMemo(
     () =>
-      effectiveSelectedGuardianId === ""
-        ? null
-        : guardians.find((guardian) => guardian.id === effectiveSelectedGuardianId) ??
-          null,
-    [guardians, effectiveSelectedGuardianId],
+      selectedGuardian
+        ? players.filter((player) => player.guardian_id === selectedGuardian.id)
+        : [],
+    [players, selectedGuardian]
   );
+  const selectedAttendance = eventAttendance.find(
+    (row) => row.player_id === parentForm.playerId
+  );
+  const isAllocationConfirmed = selectedEvent?.allocation_status === "confirmed";
 
-  const guardianManagedPlayers = useMemo(() => {
-    if (!selectedGuardian || selectedGuardian.name.trim() === "") {
-      return [];
-    }
+  const summary = useMemo(() => {
+    const counts: Record<AttendanceStatus, number> = {
+      "参加": 0,
+      "欠席": 0,
+      "遅刻": 0,
+      "未回答": 0
+    };
 
-    const guardianName = normalizeText(selectedGuardian.name);
-
-    return playerMaster.filter(
-      (player) => normalizeText(player.parentGuardianName) === guardianName,
-    );
-  }, [playerMaster, selectedGuardian]);
-
-  const playerCarMap = useMemo(() => {
-    const map = new Map<number, number>();
-    allocation.forEach((car) => {
-      car.players.forEach((player) => {
-        map.set(player.id, car.id);
-      });
+    players.forEach((player) => {
+      const row = eventAttendance.find((item) => item.player_id === player.id);
+      counts[row?.status ?? "未回答"] += 1;
     });
-    return map;
-  }, [allocation]);
 
-  const staffCarMap = useMemo(() => {
-    const map = new Map<number, number>();
-    allocation.forEach((car) => {
-      car.staff.forEach((staff) => {
-        map.set(staff.id, car.id);
-      });
-    });
-    return map;
-  }, [allocation]);
+    return counts;
+  }, [eventAttendance, players]);
+
+  const rideTargetPlayers = players.filter((player) => {
+    const row = eventAttendance.find((item) => item.player_id === player.id);
+    return (row?.status ?? "未回答") !== "欠席";
+  });
+  const assignedPlayerIds = new Set(eventAllocations.flatMap((car) => car.player_ids));
+  const unassignedPlayers = rideTargetPlayers.filter(
+    (player) => !assignedPlayerIds.has(player.id)
+  );
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const eventId = params.get("event");
+    const guardianId = params.get("guardian");
+    const mode = params.get("mode");
+
+    if (eventId) setSelectedEventId(eventId);
+    if (guardianId) setSelectedGuardianId(guardianId);
+    if (mode === "parent") setScreen("parent");
+
+    void loadSessionAndData(eventId, guardianId, mode === "parent");
+  }, []);
+
+  useEffect(() => {
+    if (!selectedGuardian) return;
+    const firstPlayer = guardianPlayers[0];
+    setParentForm((current) => ({
+      ...current,
+      guardianId: selectedGuardian.id,
+      playerId: firstPlayer?.id ?? "",
+      driverName: selectedGuardian.name,
+      canDrive: selectedGuardian.can_drive_default,
+      capacity: String(selectedGuardian.car_capacity_default)
+    }));
+  }, [guardianPlayers, selectedGuardian]);
+
+  useEffect(() => {
+    if (!selectedAttendance) return;
+    setParentForm((current) => ({
+      ...current,
+      status: selectedAttendance.status,
+      canDrive: selectedAttendance.guardian_can_drive,
+      driverName: selectedAttendance.driver_name ?? current.driverName,
+      capacity: String(selectedAttendance.car_capacity),
+      note: selectedAttendance.note ?? ""
+    }));
+  }, [selectedAttendance]);
+
+  async function loadSessionAndData(
+    eventIdFromUrl?: string | null,
+    guardianIdFromUrl?: string | null,
+    parentMode?: boolean
+  ) {
     if (!supabase) return;
 
-    let isMounted = true;
+    setLoading(true);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const hasSession = Boolean(sessionData.session);
+    setIsAdmin(hasSession);
+    if (hasSession && !parentMode) setScreen("home");
 
-    const syncSession = async () => {
-      const { data, error } = await supabase.auth.getSession();
-
-      if (!isMounted) return;
-
-      if (error) {
-        setErrorMessage(`認証状態の取得に失敗しました: ${error.message}`);
-      }
-
-      setAdminUserEmail(data.session?.user.email ?? null);
-      setIsAuthLoading(false);
-    };
-
-    void syncSession();
-
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAdminUserEmail(session?.user.email ?? null);
-      setIsAuthLoading(false);
-    });
-
-    return () => {
-      isMounted = false;
-      data.subscription.unsubscribe();
-    };
-  }, [supabase]);
-
-  const addGuardian = () => {
-    setGuardians((prev) => [
-      ...prev,
-      {
-        id: guardianIdRef.current,
-        name: "",
-        capacity: "4",
-        availability: "未回答",
-      },
+    const [
+      eventsResult,
+      guardiansResult,
+      playersResult,
+      attendanceResult,
+      allocationsResult
+    ] = await Promise.all([
+      supabase.from("events").select("*").order("starts_at", { ascending: true }),
+      supabase.from("guardians").select("*").order("name", { ascending: true }),
+      supabase.from("players").select("*").order("grade", { ascending: false }),
+      supabase.from("attendance").select("*"),
+      supabase.from("allocations").select("*").order("sort_order", { ascending: true })
     ]);
-    guardianIdRef.current += 1;
-  };
 
-  const removeGuardian = (id: number) => {
-    setGuardians((prev) => {
-      if (prev.length === 1) return prev;
-      return prev.filter((guardian) => guardian.id !== id);
+    if (eventsResult.error) setMessage(eventsResult.error.message);
+    const loadedEvents = (eventsResult.data ?? []) as EventRow[];
+    const loadedGuardians = (guardiansResult.data ?? []) as GuardianRow[];
+    const loadedPlayers = (playersResult.data ?? []) as PlayerRow[];
+    const loadedAttendance = (attendanceResult.data ?? []) as AttendanceRow[];
+    const loadedAllocations = (allocationsResult.data ?? []) as AllocationRow[];
+    setEvents(loadedEvents);
+    setGuardians(loadedGuardians);
+    setPlayers(loadedPlayers);
+    setAttendance(loadedAttendance);
+    setAllocations(loadedAllocations);
+
+    const fallbackEventId = eventIdFromUrl ?? loadedEvents[0]?.id ?? "";
+    const fallbackGuardianId = guardianIdFromUrl ?? loadedGuardians[0]?.id ?? "";
+    setSelectedEventId((current) => current || fallbackEventId);
+    setSelectedGuardianId((current) => current || fallbackGuardianId);
+    setLoading(false);
+  }
+
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase) {
+      setMessage("Supabase環境変数が未設定です。");
+      return;
+    }
+
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({
+      email: adminEmail,
+      password
     });
-  };
-
-  const updateGuardian = (
-    id: number,
-    key: keyof Omit<GuardianInput, "id">,
-    value: string,
-  ) => {
-    setGuardians((prev) =>
-      prev.map((guardian) =>
-        guardian.id === id ? { ...guardian, [key]: value } : guardian,
-      ),
-    );
-  };
-
-  const registerPlayer = () => {
-    const name = playerDraft.name.trim();
-    const grade = playerDraft.grade.trim();
-
-    if (!name || !grade) {
-      setErrorMessage("選手の登録には「名前」と「学年」が必要です。");
-      return;
-    }
-
-    setErrorMessage("");
-    setPlayerMaster((prev) => [
-      ...prev,
-      {
-        id: playerIdRef.current,
-        name,
-        grade,
-        siblingGroup: playerDraft.siblingGroup.trim(),
-        parentGuardianName: playerDraft.parentGuardianName.trim(),
-        attendance: "未回答",
-      },
-    ]);
-    playerIdRef.current += 1;
-    setPlayerDraft(INITIAL_PLAYER_DRAFT);
-  };
-
-  const removePlayer = (id: number) => {
-    setPlayerMaster((prev) => prev.filter((player) => player.id !== id));
-  };
-
-  const updatePlayerAttendance = (id: number, status: AttendanceStatus) => {
-    setPlayerMaster((prev) =>
-      prev.map((player) =>
-        player.id === id ? { ...player, attendance: status } : player,
-      ),
-    );
-  };
-
-  const registerStaff = () => {
-    const name = staffDraft.name.trim();
-
-    if (!name) {
-      setErrorMessage("監督・コーチの登録には名前が必要です。");
-      return;
-    }
-
-    setErrorMessage("");
-    setStaffMembers((prev) => [
-      ...prev,
-      {
-        id: staffIdRef.current,
-        name,
-        role: staffDraft.role,
-        attendance: "未回答",
-      },
-    ]);
-    staffIdRef.current += 1;
-    setStaffDraft(INITIAL_STAFF_DRAFT);
-  };
-
-  const removeStaff = (id: number) => {
-    setStaffMembers((prev) => prev.filter((staff) => staff.id !== id));
-  };
-
-  const updateStaffAttendance = (id: number, status: AttendanceStatus) => {
-    setStaffMembers((prev) =>
-      prev.map((staff) => (staff.id === id ? { ...staff, attendance: status } : staff)),
-    );
-  };
-
-  const updateSelectedGuardianAvailability = (
-    status: DriverAvailabilityStatus,
-  ) => {
-    if (!selectedGuardian) return;
-    updateGuardian(selectedGuardian.id, "availability", status);
-  };
-
-  const updateSelectedGuardianPlayerAttendance = (
-    playerId: number,
-    status: AttendanceStatus,
-  ) => {
-    if (!selectedGuardian || selectedGuardian.name.trim() === "") return;
-
-    const guardianName = normalizeText(selectedGuardian.name);
-
-    setPlayerMaster((prev) =>
-      prev.map((player) => {
-        if (player.id !== playerId) return player;
-        if (normalizeText(player.parentGuardianName) !== guardianName) return player;
-        return { ...player, attendance: status };
-      }),
-    );
-  };
-
-  const handleAdminLogin = async () => {
-    if (!isSupabaseConfigured || !supabase) {
-      setErrorMessage(
-        "Supabaseの環境変数が未設定です。管理者ログインを利用できません。",
-      );
-      return;
-    }
-
-    if (!normalizedAdminEmail) {
-      setErrorMessage(
-        "NEXT_PUBLIC_ADMIN_EMAIL が未設定です。管理者メールを設定してください。",
-      );
-      return;
-    }
-
-    const email = adminEmailInput.trim();
-    const password = adminPasswordInput;
-
-    if (!email || !password) {
-      setErrorMessage("管理者メールアドレスとパスワードを入力してください。");
-      return;
-    }
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    setLoading(false);
 
     if (error) {
-      setErrorMessage(`ログインに失敗しました: ${error.message}`);
+      setMessage(error.message);
       return;
     }
 
-    const signedInEmail = data.user?.email ?? null;
-    if (!signedInEmail) {
-      setErrorMessage("ログイン情報を取得できませんでした。");
+    setIsAdmin(true);
+    setScreen("home");
+    await loadSessionAndData();
+  }
+
+  async function handleLogout() {
+    await supabase?.auth.signOut();
+    setIsAdmin(false);
+    setScreen("login");
+  }
+
+  async function handleCreateEvent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !isAdmin) return;
+
+    const { data: userData } = await supabase.auth.getUser();
+    const startsAt = new Date(eventForm.startsAt).toISOString();
+    const { data, error } = await supabase
+      .from("events")
+      .insert({
+        title: eventForm.title,
+        event_type: eventForm.eventType,
+        starts_at: startsAt,
+        place: eventForm.place,
+        created_by: userData.user?.id ?? null
+      })
+      .select()
+      .single();
+
+    if (error) {
+      setMessage(error.message);
       return;
     }
 
-    if (normalizeText(signedInEmail) !== normalizedAdminEmail) {
-      await supabase.auth.signOut();
-      setAdminUserEmail(null);
-      setErrorMessage("このアカウントは管理者として許可されていません。");
+    setEventForm(initialEventForm);
+    await loadSessionAndData(data.id);
+  }
+
+  async function deleteEvent(eventId: string) {
+    if (!supabase || !isAdmin) return;
+    const { error } = await supabase.from("events").delete().eq("id", eventId);
+    if (error) {
+      setMessage(error.message);
       return;
     }
+    await loadSessionAndData();
+  }
 
-    setAdminUserEmail(signedInEmail);
-    setAdminPasswordInput("");
-    setErrorMessage("");
-  };
+  async function handleParentSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !selectedEvent || !parentForm.playerId) return;
 
-  const handleAdminLogout = async () => {
-    if (supabase) {
-      await supabase.auth.signOut();
-    }
-    setAdminUserEmail(null);
-    setAdminPasswordInput("");
-    setIsAllocationEditMode(false);
-  };
-
-  const handleAutoAllocate = () => {
-    if (!isAdminAuthorized) {
-      setErrorMessage("配車の実行は管理者ログインが必要です。");
-      return;
-    }
-
-    setErrorMessage("");
-    setCopyMessage("");
-
-    const normalizedGuardians: {
-      id: number;
-      name: string;
-      capacity: number;
-      availability: DriverAvailabilityStatus;
-    }[] = [];
-
-    // 車情報の入力を検証し、配車に使う形式へ変換します。
-    for (const guardian of guardians) {
-      const name = guardian.name.trim();
-      const capacityText = guardian.capacity.trim();
-
-      if (name === "" && capacityText === "") {
-        continue;
-      }
-
-      if (name === "" || capacityText === "") {
-        setAllocation([]);
-        setErrorMessage("保護者名と定員はセットで入力してください。");
-        return;
-      }
-
-      const capacity = Number(capacityText);
-      if (!Number.isInteger(capacity) || capacity <= 0) {
-        setAllocation([]);
-        setErrorMessage("定員は1以上の整数で入力してください。");
-        return;
-      }
-
-      normalizedGuardians.push({
-        id: guardian.id,
-        name,
-        capacity,
-        availability: guardian.availability,
-      });
-    }
-
-    const availableGuardians = normalizedGuardians.filter(
-      (guardian) => guardian.availability === "配車可",
-    );
-
-    if (availableGuardians.length === 0) {
-      setAllocation([]);
-      setErrorMessage("配車可能（配車可）の保護者を1名以上設定してください。");
-      return;
-    }
-
-    const guardianNameToIndex = new Map<string, number>();
-    for (const guardian of availableGuardians) {
-      const normalizedName = normalizeText(guardian.name);
-      if (guardianNameToIndex.has(normalizedName)) {
-        setAllocation([]);
-        setErrorMessage(
-          "配車可の保護者名が重複しています。重複しない名前にしてください。",
-        );
-        return;
-      }
-      guardianNameToIndex.set(normalizedName, guardianNameToIndex.size);
-    }
-
-    if (participatingPlayers.length === 0 && participatingStaff.length === 0) {
-      setAllocation([]);
-      setErrorMessage("参加者がいません。選手・監督・コーチの参加可否を入力してください。");
-      return;
-    }
-
-    const totalPassengers = participatingPlayers.length + participatingStaff.length;
-    const totalCapacity = availableGuardians.reduce(
-      (sum, guardian) => sum + guardian.capacity,
-      0,
-    );
-
-    if (totalPassengers > totalCapacity) {
-      setAllocation([]);
-      setErrorMessage(
-        `定員不足です。参加者${totalPassengers}名に対して、総定員は${totalCapacity}名です。`,
-      );
-      return;
-    }
-
-    const cars: AllocationResult[] = availableGuardians.map((guardian) => ({
-      id: guardian.id,
-      guardianName: guardian.name,
-      capacity: guardian.capacity,
-      players: [],
-      staff: [],
-    }));
-
-    const scoreCarForPlayer = (
-      car: AllocationResult,
-      carIndex: number,
-      player: Player,
-      anchorCarIndex: number | null,
-    ) => {
-      const remaining = getRemainingSeats(car);
-      if (remaining <= 0) {
-        return Number.NEGATIVE_INFINITY;
-      }
-
-      const normalizedParent = normalizeText(player.parentGuardianName);
-      const normalizedGrade = normalizeText(player.grade);
-      const normalizedSibling = normalizeText(player.siblingGroup);
-
-      let score = 0;
-
-      if (anchorCarIndex !== null && carIndex === anchorCarIndex) {
-        score += 260;
-      }
-
-      // 親が運転手の場合は、その親の車を最優先にします。
-      if (normalizedParent && normalizedParent === normalizeText(car.guardianName)) {
-        score += 1000;
-      }
-
-      // 兄弟グループがすでに乗っている車を強く優先します。
-      if (
-        normalizedSibling &&
-        car.players.some(
-          (assignedPlayer) =>
-            normalizeText(assignedPlayer.siblingGroup) === normalizedSibling,
-        )
-      ) {
-        score += 520;
-      }
-
-      // 同学年の選手がいる車を優先し、同学年同乗を促進します。
-      const sameGradeCount = car.players.filter(
-        (assignedPlayer) => normalizeText(assignedPlayer.grade) === normalizedGrade,
-      ).length;
-      score += sameGradeCount * 95;
-
-      // 監督・コーチは選手と分けたいので、スタッフがいる車は選手をやや避けます。
-      if (car.staff.length > 0) {
-        score -= 260;
-      }
-
-      // 人数バランスをとるため、混雑車は少し不利にします。
-      score -= getCarLoad(car) * 8;
-
-      return score;
+    const payload = {
+      event_id: selectedEvent.id,
+      player_id: parentForm.playerId,
+      guardian_id: parentForm.guardianId || null,
+      status: parentForm.status,
+      guardian_can_drive: parentForm.canDrive,
+      driver_name: parentForm.canDrive ? parentForm.driverName : null,
+      car_capacity: Math.max(Number(parentForm.capacity) || 1, 1),
+      note: parentForm.note || null,
+      submitted_at: new Date().toISOString()
     };
 
-    // 兄弟指定のある選手はグループ化して連続で割当し、同乗しやすくします。
-    const siblingUnits = new Map<string, Player[]>();
-    const individualUnits: Player[][] = [];
+    const { error } = await supabase
+      .from("attendance")
+      .upsert(payload, { onConflict: "event_id,player_id" });
 
-    for (const player of participatingPlayers) {
-      const siblingKey = normalizeText(player.siblingGroup);
-      if (!siblingKey) {
-        individualUnits.push([player]);
-        continue;
-      }
-
-      const existing = siblingUnits.get(siblingKey);
-      if (existing) {
-        existing.push(player);
-      } else {
-        siblingUnits.set(siblingKey, [player]);
-      }
-    }
-
-    const playerUnits: Player[][] = [...siblingUnits.values(), ...individualUnits].sort(
-      (a, b) => b.length - a.length,
-    );
-
-    for (const unit of playerUnits) {
-      const sortedMembers = [...unit].sort((a, b) => {
-        const aHasParent = guardianNameToIndex.has(normalizeText(a.parentGuardianName));
-        const bHasParent = guardianNameToIndex.has(normalizeText(b.parentGuardianName));
-        if (aHasParent !== bHasParent) {
-          return Number(bHasParent) - Number(aHasParent);
-        }
-        return a.name.localeCompare(b.name, "ja");
-      });
-
-      let anchorCarIndex: number | null = null;
-
-      for (const player of sortedMembers) {
-        const candidateCars = cars
-          .map((car, carIndex) => ({
-            carIndex,
-            score: scoreCarForPlayer(car, carIndex, player, anchorCarIndex),
-          }))
-          .filter((candidate) => Number.isFinite(candidate.score))
-          .sort((a, b) => {
-            if (a.score !== b.score) {
-              return b.score - a.score;
-            }
-
-            const aLoad = getCarLoad(cars[a.carIndex]);
-            const bLoad = getCarLoad(cars[b.carIndex]);
-            if (aLoad !== bLoad) {
-              return aLoad - bLoad;
-            }
-
-            return b.carIndex - a.carIndex;
-          });
-
-        if (candidateCars.length === 0) {
-          setAllocation([]);
-          setErrorMessage("選手の配車に失敗しました。定員や参加者設定を見直してください。");
-          return;
-        }
-
-        const selectedCarIndex = candidateCars[0].carIndex;
-        cars[selectedCarIndex].players.push(player);
-
-        if (anchorCarIndex === null) {
-          anchorCarIndex = selectedCarIndex;
-        }
-      }
-    }
-
-    // 監督・コーチは選手とは別枠で割当し、できるだけ選手の少ない車へ配車します。
-    for (const staff of participatingStaff) {
-      const candidateCars = cars
-        .map((car, carIndex) => {
-          const remaining = getRemainingSeats(car);
-          if (remaining <= 0) {
-            return { carIndex, score: Number.NEGATIVE_INFINITY };
-          }
-
-          // 選手が少ない車、スタッフが少ない車を優先します。
-          const score =
-            car.players.length * -80 +
-            car.staff.length * -40 +
-            getCarLoad(car) * -6 +
-            remaining * 4;
-
-          return { carIndex, score };
-        })
-        .filter((candidate) => Number.isFinite(candidate.score))
-        .sort((a, b) => b.score - a.score);
-
-      if (candidateCars.length === 0) {
-        setAllocation([]);
-        setErrorMessage("監督・コーチの配車に失敗しました。定員を確認してください。");
-        return;
-      }
-
-      cars[candidateCars[0].carIndex].staff.push(staff);
-    }
-
-    setAllocation(cars);
-    setIsAllocationEditMode(false);
-    setIsAllocationConfirmed(false);
-  };
-
-  const handleMovePlayer = (playerId: number, destinationCarId: number) => {
-    if (!isAdminAuthorized || !isAllocationEditMode) return;
-
-    const currentCarId = playerCarMap.get(playerId);
-    if (!currentCarId || currentCarId === destinationCarId) return;
-
-    const nextAllocation = cloneAllocation(allocation);
-
-    const sourceCar = nextAllocation.find((car) => car.id === currentCarId);
-    const destinationCar = nextAllocation.find((car) => car.id === destinationCarId);
-
-    if (!sourceCar || !destinationCar) return;
-
-    if (getCarLoad(destinationCar) >= destinationCar.capacity) {
-      setErrorMessage("移動先の車が満席です。別の車を選んでください。");
+    if (error) {
+      setMessage(error.message);
       return;
     }
 
-    const playerIndex = sourceCar.players.findIndex((player) => player.id === playerId);
-    if (playerIndex === -1) return;
+    setMessage("回答を保存しました。");
+    await loadSessionAndData(selectedEvent.id, parentForm.guardianId, screen === "parent");
+  }
 
-    const movingPlayer = sourceCar.players.splice(playerIndex, 1)[0];
-    destinationCar.players.push(movingPlayer);
+  async function updateAttendanceStatus(playerId: string, status: AttendanceStatus) {
+    if (!supabase || !selectedEvent || !isAdmin) return;
 
-    setErrorMessage("");
-    setAllocation(nextAllocation);
-    setIsAllocationConfirmed(false);
-  };
-
-  const handleMoveStaff = (staffId: number, destinationCarId: number) => {
-    if (!isAdminAuthorized || !isAllocationEditMode) return;
-
-    const currentCarId = staffCarMap.get(staffId);
-    if (!currentCarId || currentCarId === destinationCarId) return;
-
-    const nextAllocation = cloneAllocation(allocation);
-
-    const sourceCar = nextAllocation.find((car) => car.id === currentCarId);
-    const destinationCar = nextAllocation.find((car) => car.id === destinationCarId);
-
-    if (!sourceCar || !destinationCar) return;
-
-    if (getCarLoad(destinationCar) >= destinationCar.capacity) {
-      setErrorMessage("移動先の車が満席です。別の車を選んでください。");
-      return;
-    }
-
-    const staffIndex = sourceCar.staff.findIndex((staff) => staff.id === staffId);
-    if (staffIndex === -1) return;
-
-    const movingStaff = sourceCar.staff.splice(staffIndex, 1)[0];
-    destinationCar.staff.push(movingStaff);
-
-    setErrorMessage("");
-    setAllocation(nextAllocation);
-    setIsAllocationConfirmed(false);
-  };
-
-  const handleConfirmAllocation = () => {
-    if (!isAdminAuthorized) {
-      setErrorMessage("配車確定は管理者のみ実行できます。");
-      return;
-    }
-
-    if (allocation.length === 0) {
-      setErrorMessage("確定できる配車結果がありません。");
-      return;
-    }
-
-    setIsAllocationEditMode(false);
-    setIsAllocationConfirmed(true);
-    setErrorMessage("");
-  };
-
-  const lineShareText = useMemo(() => {
-    if (allocation.length === 0) {
-      return "";
-    }
-
-    const lines: string[] = [
-      "",
-      `遠征名: ${expeditionName.trim() || "未入力"}`,
-      `目的地: ${destination.trim() || "未入力"}`,
-      `参加選手: ${participatingPlayers.length}名 / 監督・コーチ: ${participatingStaff.length}名`,
-      "",
-    ];
-
-    allocation.forEach((car, index) => {
-      lines.push(
-        `${index + 1}号車 ${car.guardianName}（${getCarLoad(car)}/${car.capacity}名）`,
+    const player = getPlayer(players, playerId);
+    const { error } = await supabase
+      .from("attendance")
+      .upsert(
+        {
+          event_id: selectedEvent.id,
+          player_id: playerId,
+          guardian_id: player?.guardian_id ?? null,
+          status,
+          submitted_at: new Date().toISOString()
+        },
+        { onConflict: "event_id,player_id" }
       );
-      lines.push(`選手(${car.players.length}名)`);
 
-      if (car.players.length > 0) {
-        car.players.forEach((player) => {
-          lines.push(`・${player.name} (${player.grade})`);
-        });
-      } else {
-        lines.push("・なし");
-      }
+    if (error) setMessage(error.message);
+    await loadSessionAndData(selectedEvent.id);
+  }
 
-      lines.push(`監督・コーチ(${car.staff.length}名)`);
-      if (car.staff.length > 0) {
-        car.staff.forEach((staff) => {
-          lines.push(`・${staff.role} ${staff.name}`);
-        });
-      } else {
-        lines.push("・なし");
-      }
+  async function handleCreateCar(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !selectedEvent || !isAdmin || isAllocationConfirmed) return;
 
-      lines.push("");
+    const { error } = await supabase.from("allocations").insert({
+      event_id: selectedEvent.id,
+      driver_name: carForm.driverName,
+      car_name: carForm.carName || `${eventAllocations.length + 1}号車`,
+      capacity: Math.max(Number(carForm.capacity) || 1, 1),
+      player_ids: [],
+      sort_order: eventAllocations.length
     });
 
-    return lines.join("\n");
-  }, [
-    allocation,
-    expeditionName,
-    destination,
-    participatingPlayers.length,
-    participatingStaff.length,
-  ]);
+    if (error) setMessage(error.message);
+    setCarForm({ driverName: "", carName: "", capacity: "4" });
+    await loadSessionAndData(selectedEvent.id);
+  }
 
-  const handleCopyShareText = async () => {
-    if (!lineShareText) {
-      return;
-    }
+  async function createRidePlanFromResponses() {
+    if (!supabase || !selectedEvent || !isAdmin || isAllocationConfirmed) return;
 
-    try {
-      await navigator.clipboard.writeText(lineShareText);
-      setCopyMessage("コピーしました。LINEに貼り付けて共有できます。");
-    } catch {
-      setCopyMessage("コピーできませんでした。テキストを手動でコピーしてください。");
-    }
-  };
+    const driverRows = eventAttendance.filter(
+      (row) => row.guardian_can_drive && row.status !== "欠席"
+    );
 
-  const isCopyError = copyMessage.includes("コピーできませんでした");
+    const baseCars = driverRows.map((row, index) => ({
+      id: crypto.randomUUID(),
+      event_id: selectedEvent.id,
+      guardian_id: row.guardian_id,
+      driver_name: row.driver_name || getGuardian(guardians, row.guardian_id)?.name || "運転者",
+      car_name: `${index + 1}号車`,
+      capacity: row.car_capacity,
+      player_ids: [] as string[],
+      sort_order: index,
+      created_at: "",
+      updated_at: ""
+    }));
+
+    const assignedCars = createAutoAssignedCars(
+      baseCars,
+      rideTargetPlayers,
+      players,
+      autoAssignOptions
+    );
+
+    await supabase.from("allocations").delete().eq("event_id", selectedEvent.id);
+    const { error } = await supabase.from("allocations").insert(
+      assignedCars.map((car, index) => ({
+        event_id: selectedEvent.id,
+        guardian_id: car.guardian_id,
+        driver_name: car.driver_name,
+        car_name: car.car_name,
+        capacity: car.capacity,
+        player_ids: car.player_ids,
+        sort_order: index
+      }))
+    );
+
+    if (error) setMessage(error.message);
+    await loadSessionAndData(selectedEvent.id);
+  }
+
+  async function autoAssignExistingCars() {
+    if (!supabase || !selectedEvent || !isAdmin || isAllocationConfirmed) return;
+    const client = supabase;
+
+    const assignedCars = createAutoAssignedCars(
+      eventAllocations,
+      rideTargetPlayers,
+      players,
+      autoAssignOptions
+    );
+
+    await Promise.all(
+      assignedCars.map((car) =>
+        client.from("allocations").update({ player_ids: car.player_ids }).eq("id", car.id)
+      )
+    );
+    await loadSessionAndData(selectedEvent.id);
+  }
+
+  async function assignPlayerToCar(playerId: string, allocationId: string) {
+    if (!supabase || !selectedEvent || !isAdmin || isAllocationConfirmed) return;
+    const client = supabase;
+
+    const nextCars = eventAllocations.map((car) => ({
+      ...car,
+      player_ids: car.player_ids.filter((id) => id !== playerId)
+    }));
+    const targetCar = nextCars.find((car) => car.id === allocationId);
+    if (targetCar) targetCar.player_ids = [...targetCar.player_ids, playerId];
+
+    await Promise.all(
+      nextCars.map((car) =>
+        client.from("allocations").update({ player_ids: car.player_ids }).eq("id", car.id)
+      )
+    );
+    await loadSessionAndData(selectedEvent.id);
+  }
+
+  async function completeRidePlan() {
+    if (!supabase || !selectedEvent || !isAdmin) return;
+    await supabase
+      .from("events")
+      .update({ allocation_status: "confirmed" })
+      .eq("id", selectedEvent.id);
+    await loadSessionAndData(selectedEvent.id);
+  }
+
+  async function reopenRidePlanForEdit() {
+    if (!supabase || !selectedEvent || !isAdmin) return;
+    await supabase
+      .from("events")
+      .update({ allocation_status: "draft" })
+      .eq("id", selectedEvent.id);
+    await loadSessionAndData(selectedEvent.id);
+  }
+
+  async function deleteCar(allocationId: string) {
+    if (!supabase || !isAdmin || isAllocationConfirmed) return;
+    await supabase.from("allocations").delete().eq("id", allocationId);
+    await loadSessionAndData(selectedEventId);
+  }
+
+  function shareUrl(eventId: string, guardianId?: string) {
+    const origin = typeof window === "undefined" ? "" : window.location.origin;
+    return `${origin}/?event=${eventId}&mode=parent${
+      guardianId ? `&guardian=${guardianId}` : ""
+    }`;
+  }
+
+  async function copyShareText(eventToShare: EventRow) {
+    const text = `【${eventToShare.title} 参加確認】\n${formatDate(
+      eventToShare.starts_at
+    )}\n場所: ${eventToShare.place}\n以下URLから出欠と配車可否を入力してください。\n${shareUrl(
+      eventToShare.id
+    )}`;
+    await navigator.clipboard.writeText(text);
+    setMessage("LINE共有テキストをコピーしました。");
+  }
+
+  async function copyRidePlanText() {
+    if (!selectedEvent) return;
+    const lines = [
+      `【${selectedEvent.title} 配車表】`,
+      `${formatDate(selectedEvent.starts_at)} / ${selectedEvent.place}`,
+      "",
+      ...eventAllocations.flatMap((car) => [
+        `${car.car_name}（運転者: ${car.driver_name} / ${car.player_ids.length}/${car.capacity}名）`,
+        car.player_ids
+          .map((playerId) => getPlayer(players, playerId)?.name ?? "不明")
+          .join("、") || "未割当",
+        ""
+      ])
+    ];
+    await navigator.clipboard.writeText(lines.join("\n").trim());
+    setMessage("配車表のLINE共有テキストをコピーしました。");
+  }
+
+  if (!isSupabaseConfigured) {
+    return (
+      <main className="min-h-screen bg-chalk px-4 py-10">
+        <section className="mx-auto max-w-md rounded-lg bg-white p-5 shadow-soft">
+          <h1 className="text-xl font-black">Supabase設定が必要です</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-600">
+            `.env.local` に `NEXT_PUBLIC_SUPABASE_URL` と
+            `NEXT_PUBLIC_SUPABASE_ANON_KEY` を設定してください。
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  if (screen === "login") {
+    return (
+      <main className="min-h-[100dvh] bg-chalk px-4 py-8" style={appBackgroundStyle}>
+        <section className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-md flex-col justify-center">
+          <div className="mb-8">
+            <p className="mb-3 text-sm font-bold text-clay">少年野球遠征配車</p>
+            <h1 className="text-3xl font-black leading-tight">
+              Supabaseで共有する配車管理
+            </h1>
+            <p className="mt-4 text-sm leading-6 text-slate-600">
+              管理者はログインして全データを編集できます。保護者は共有URLから入力できます。
+            </p>
+          </div>
+          <form onSubmit={handleLogin} className="rounded-lg bg-white p-5 shadow-soft">
+            <label className="mb-2 block text-sm font-bold">メールアドレス</label>
+            <input
+              value={adminEmail}
+              onChange={(event) => setAdminEmail(event.target.value)}
+              type="email"
+              className="mb-4 w-full rounded-md border border-slate-200 px-4 py-3"
+            />
+            <label className="mb-2 block text-sm font-bold">パスワード</label>
+            <input
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              className="mb-5 w-full rounded-md border border-slate-200 px-4 py-3"
+            />
+            <button
+              disabled={loading}
+              className="w-full rounded-md bg-field px-4 py-4 font-bold text-white disabled:bg-slate-300"
+            >
+              ログイン
+            </button>
+          </form>
+          {message && <p className="mt-4 text-sm font-bold text-rose-700">{message}</p>}
+        </section>
+      </main>
+    );
+  }
+
+  if (screen === "parent" && selectedEvent) {
+    return (
+      <main className="min-h-[100dvh] bg-chalk px-4 py-6" style={appBackgroundStyle}>
+        <section className="mx-auto max-w-md space-y-5">
+          <div className="rounded-lg bg-white p-5 shadow-soft">
+            <p className="text-sm font-bold text-clay">保護者入力</p>
+            <h1 className="mt-2 text-2xl font-black">{selectedEvent.title}</h1>
+            <p className="mt-2 text-sm text-slate-600">
+              {formatDate(selectedEvent.starts_at)} / {selectedEvent.place}
+            </p>
+          </div>
+
+          <form onSubmit={handleParentSubmit} className="rounded-lg bg-white p-5 shadow-soft">
+            <label className="mb-2 block text-sm font-bold">保護者</label>
+            <select
+              value={parentForm.guardianId}
+              onChange={(event) => setSelectedGuardianId(event.target.value)}
+              className="mb-4 w-full rounded-md border border-slate-200 px-4 py-3"
+            >
+              {guardians.map((guardian) => (
+                <option key={guardian.id} value={guardian.id}>
+                  {guardian.name}
+                </option>
+              ))}
+            </select>
+
+            <label className="mb-2 block text-sm font-bold">選手</label>
+            <select
+              value={parentForm.playerId}
+              onChange={(event) =>
+                setParentForm((current) => ({ ...current, playerId: event.target.value }))
+              }
+              className="mb-4 w-full rounded-md border border-slate-200 px-4 py-3"
+            >
+              {guardianPlayers.map((player) => (
+                <option key={player.id} value={player.id}>
+                  {player.name}
+                </option>
+              ))}
+            </select>
+
+            <div className="mb-4 grid grid-cols-2 gap-2">
+              {(["参加", "欠席", "遅刻", "未回答"] as AttendanceStatus[]).map(
+                (status) => (
+                  <button
+                    type="button"
+                    key={status}
+                    onClick={() => setParentForm((current) => ({ ...current, status }))}
+                    className={`rounded-md border px-3 py-4 font-bold ${
+                      parentForm.status === status
+                        ? statusStyles[status]
+                        : "border-slate-200 bg-white text-slate-600"
+                    }`}
+                  >
+                    {status}
+                  </button>
+                )
+              )}
+            </div>
+
+            <label className="mb-3 flex items-center justify-between rounded-md bg-slate-50 px-3 py-3 font-bold">
+              車出しできます
+              <input
+                checked={parentForm.canDrive}
+                onChange={(event) =>
+                  setParentForm((current) => ({
+                    ...current,
+                    canDrive: event.target.checked
+                  }))
+                }
+                type="checkbox"
+                className="h-6 w-6 accent-field"
+              />
+            </label>
+
+            {parentForm.canDrive && (
+              <div className="mb-4 grid gap-3">
+                <input
+                  value={parentForm.driverName}
+                  onChange={(event) =>
+                    setParentForm((current) => ({
+                      ...current,
+                      driverName: event.target.value
+                    }))
+                  }
+                  placeholder="運転者名"
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
+                <input
+                  value={parentForm.capacity}
+                  onChange={(event) =>
+                    setParentForm((current) => ({
+                      ...current,
+                      capacity: event.target.value
+                    }))
+                  }
+                  type="number"
+                  min="1"
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
+              </div>
+            )}
+
+            <textarea
+              value={parentForm.note}
+              onChange={(event) =>
+                setParentForm((current) => ({ ...current, note: event.target.value }))
+              }
+              placeholder="連絡事項"
+              rows={3}
+              className="mb-4 w-full rounded-md border border-slate-200 px-4 py-3"
+            />
+
+            <button className="w-full rounded-md bg-field px-4 py-4 font-bold text-white">
+              Supabaseに保存
+            </button>
+          </form>
+
+          {isAllocationConfirmed && (
+            <AllocationResult allocations={eventAllocations} players={players} />
+          )}
+
+          {message && <p className="text-sm font-bold text-field">{message}</p>}
+          {!isParentLinkMode && (
+            <button
+              onClick={() => setScreen("events")}
+              className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+            >
+              管理者画面へ戻る
+            </button>
+          )}
+        </section>
+      </main>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-100 px-3 py-4 text-slate-900 sm:px-6 sm:py-8">
-      <main className="mx-auto w-full max-w-5xl space-y-5 rounded-3xl bg-white p-4 shadow-sm sm:space-y-6 sm:p-6">
-        <header className="space-y-2">
-          <h1 className="text-2xl font-bold leading-tight sm:text-3xl">
-            少年野球 遠征配車アプリ
-          </h1>
-          <p className="text-sm leading-relaxed text-slate-600">
-            保護者入力モードと管理者モードを分け、出欠回答から配車を作成できます。
-          </p>
-        </header>
-
-        <section className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2">
+    <main className="min-h-[100dvh] bg-chalk pb-28" style={appBackgroundStyle}>
+      <header className="sticky top-0 z-20 border-b border-black/5 bg-chalk/95 px-4 py-3 backdrop-blur">
+        <div className="mx-auto flex max-w-3xl items-center justify-between">
+          <div>
+            <p className="text-xs font-bold text-clay">{adminEmail}</p>
+            <h1 className="text-lg font-black">遠征配車管理</h1>
+          </div>
           <button
-            type="button"
-            onClick={() => setViewMode("guardian")}
-            className={`min-h-11 rounded-xl text-sm font-semibold ${
-              viewMode === "guardian"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-slate-700"
-            }`}
+            onClick={handleLogout}
+            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
           >
-            保護者入力モード
+            ログアウト
           </button>
-          <button
-            type="button"
-            onClick={() => setViewMode("admin")}
-            className={`min-h-11 rounded-xl text-sm font-semibold ${
-              viewMode === "admin" ? "bg-slate-800 text-white" : "bg-white text-slate-700"
-            }`}
-          >
-            管理者モード
-          </button>
-        </section>
+        </div>
+      </header>
 
-        {viewMode === "guardian" && (
-          <section className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-            <h2 className="text-lg font-semibold">保護者入力</h2>
-            <p className="text-sm text-slate-600">
-              自分の「配車可否」と、自分の子どもの「参加可否」だけ入力してください。
-            </p>
+      <section className="mx-auto max-w-3xl px-4 py-5">
+        {screen === "home" && (
+          <div className="space-y-4">
+            <DashboardCard
+              label="保存先"
+              title="Supabase共有モード"
+              body="保護者入力、出欠、配車結果はSupabaseに保存され、別端末でも同じデータを確認できます。"
+            />
+            <div className="grid grid-cols-2 gap-3">
+              <Metric label="遠征" value={`${events.length}件`} />
+              <Metric label="選手" value={`${players.length}名`} />
+              <Metric label="保護者" value={`${guardians.length}名`} />
+              <Metric label="配車" value={`${allocations.length}台`} />
+            </div>
+          </div>
+        )}
 
-            {namedGuardians.length === 0 ? (
-              <p className="text-sm text-slate-600">
-                まだ保護者が登録されていません。管理者モードで登録してください。
-              </p>
-            ) : (
-              <>
-                <label className="space-y-1.5">
-                  <span className="block text-sm font-semibold">保護者選択</span>
-                  <select
-                    value={
-                      effectiveSelectedGuardianId === ""
-                        ? ""
-                        : String(effectiveSelectedGuardianId)
-                    }
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setSelectedGuardianId(value ? Number(value) : "");
+        {screen === "events" && (
+          <div className="space-y-5">
+            <form onSubmit={handleCreateEvent} className="rounded-lg bg-white p-4 shadow-soft">
+              <h2 className="mb-3 text-xl font-black">遠征・イベント作成</h2>
+              <div className="grid gap-3">
+                <input
+                  value={eventForm.title}
+                  onChange={(event) =>
+                    setEventForm((current) => ({ ...current, title: event.target.value }))
+                  }
+                  placeholder="イベント名"
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
+                <select
+                  value={eventForm.eventType}
+                  onChange={(event) =>
+                    setEventForm((current) => ({
+                      ...current,
+                      eventType: event.target.value as EventType
+                    }))
+                  }
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                >
+                  <option>練習</option>
+                  <option>試合</option>
+                  <option>遠征</option>
+                </select>
+                <input
+                  value={eventForm.startsAt}
+                  onChange={(event) =>
+                    setEventForm((current) => ({ ...current, startsAt: event.target.value }))
+                  }
+                  type="datetime-local"
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
+                <input
+                  value={eventForm.place}
+                  onChange={(event) =>
+                    setEventForm((current) => ({ ...current, place: event.target.value }))
+                  }
+                  placeholder="場所"
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
+                <button className="rounded-md bg-night px-4 py-4 font-bold text-white">
+                  Supabaseにイベント保存
+                </button>
+              </div>
+            </form>
+
+            {events.map((event) => (
+              <article key={event.id} className="rounded-lg bg-white p-4 shadow-soft">
+                <span className="rounded-md bg-clay px-2 py-1 text-xs font-bold text-white">
+                  {event.event_type}
+                </span>
+                <h3 className="mt-3 text-lg font-black">{event.title}</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  {formatDate(event.starts_at)} / {event.place}
+                </p>
+                <p className="mt-2 break-all rounded-md bg-slate-50 p-2 text-xs font-bold text-slate-600">
+                  {shareUrl(event.id)}
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => {
+                      setSelectedEventId(event.id);
+                      setScreen("parent");
                     }}
-                    className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                    className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
                   >
-                    {namedGuardians.map((guardian) => (
-                      <option key={guardian.id} value={guardian.id}>
-                        {guardian.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                {selectedGuardian && (
-                  <>
-                    <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
-                      <p className="text-sm font-semibold text-slate-800">
-                        配車可否（{selectedGuardian.name}）
-                      </p>
-                      <div className="grid grid-cols-3 gap-2">
-                        {DRIVER_OPTIONS.map((status) => (
-                          <button
-                            key={status}
-                            type="button"
-                            onClick={() => updateSelectedGuardianAvailability(status)}
-                            className={`min-h-10 rounded-xl border text-xs font-semibold ${
-                              selectedGuardian.availability === status
-                                ? status === "配車可"
-                                  ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                                  : status === "配車不可"
-                                    ? "border-rose-300 bg-rose-50 text-rose-800"
-                                    : "border-slate-300 bg-slate-100 text-slate-800"
-                                : "border-slate-200 bg-white text-slate-600"
-                            }`}
-                          >
-                            {status}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
-                      <p className="text-sm font-semibold text-slate-800">
-                        自分の子どもの参加可否
-                      </p>
-
-                      {guardianManagedPlayers.length === 0 ? (
-                        <p className="text-sm text-slate-500">
-                          この保護者名に紐づく選手は未登録です。
-                        </p>
-                      ) : (
-                        <div className="space-y-2">
-                          {guardianManagedPlayers.map((player) => (
-                            <div
-                              key={player.id}
-                              className="rounded-xl border border-slate-200 bg-slate-50 p-3"
-                            >
-                              <p className="mb-2 text-sm font-semibold text-slate-900">
-                                {player.name} ({player.grade})
-                              </p>
-                              <div className="grid grid-cols-3 gap-2">
-                                {ATTENDANCE_OPTIONS.map((status) => (
-                                  <button
-                                    key={status}
-                                    type="button"
-                                    onClick={() =>
-                                      updateSelectedGuardianPlayerAttendance(
-                                        player.id,
-                                        status,
-                                      )
-                                    }
-                                    className={`min-h-10 rounded-xl border text-xs font-semibold ${
-                                      player.attendance === status
-                                        ? status === "参加"
-                                          ? "border-blue-300 bg-blue-50 text-blue-800"
-                                          : status === "不参加"
-                                            ? "border-rose-300 bg-rose-50 text-rose-800"
-                                            : "border-slate-300 bg-slate-100 text-slate-800"
-                                        : "border-slate-200 bg-white text-slate-600"
-                                    }`}
-                                  >
-                                    {status}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-          </section>
-        )}
-
-        {viewMode === "admin" && (
-          <section className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-            <h2 className="text-lg font-semibold">管理者</h2>
-
-            {!isAdminAuthenticated ? (
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
-                <p className="text-sm text-slate-600">
-                  管理者操作には Supabase Auth のメールアドレス・パスワード入力が必要です。
-                </p>
-                {!isSupabaseConfigured && (
-                  <p className="text-xs font-medium text-red-600">
-                    Supabase環境変数が未設定です。設定後に再読み込みしてください。
-                  </p>
-                )}
-                <input
-                  type="email"
-                  value={adminEmailInput}
-                  onChange={(event) => setAdminEmailInput(event.target.value)}
-                  placeholder="管理者メールアドレス"
-                  className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                />
-                <input
-                  type="password"
-                  value={adminPasswordInput}
-                  onChange={(event) => setAdminPasswordInput(event.target.value)}
-                  placeholder="パスワード"
-                  className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                />
-                <button
-                  type="button"
-                  onClick={handleAdminLogin}
-                  disabled={isAuthLoading || !isSupabaseConfigured}
-                  className="min-h-11 w-full rounded-xl bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isAuthLoading ? "認証状態を確認中..." : "管理者としてログイン"}
-                </button>
-                <p className="text-xs text-slate-500">
-                  管理者メール:{" "}
-                  <span className="font-mono">
-                    {process.env.NEXT_PUBLIC_ADMIN_EMAIL || "(未設定)"}
-                  </span>
-                </p>
-              </div>
-            ) : (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-3">
-                  <p className="text-sm font-semibold text-emerald-700">
-                    ログイン中: {adminUserEmail}
-                  </p>
+                    入力画面
+                  </button>
                   <button
-                    type="button"
-                    onClick={handleAdminLogout}
-                    className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    onClick={() => {
+                      setSelectedEventId(event.id);
+                      setScreen("carpool");
+                    }}
+                    className="rounded-md bg-field px-3 py-3 font-bold text-white"
                   >
-                    ログアウト
+                    配車
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedEventId(event.id);
+                      setScreen("summary");
+                    }}
+                    className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
+                  >
+                    集計
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedEventId(event.id);
+                      void copyShareText(event);
+                    }}
+                    className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
+                  >
+                    LINE文コピー
+                  </button>
+                  <button
+                    onClick={() => deleteEvent(event.id)}
+                    className="col-span-2 rounded-md border border-rose-100 bg-white px-3 py-3 font-bold text-rose-700"
+                  >
+                    イベント削除
                   </button>
                 </div>
-
-                {!isAdminAuthorized && (
-                  <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
-                    管理者メールと一致しないため、配車操作はできません。
-                  </p>
-                )}
-
-                {isAdminAuthorized && (
-                  <>
-
-                <section className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-1.5">
-                    <span className="block text-sm font-semibold">遠征名</span>
-                    <input
-                      type="text"
-                      value={expeditionName}
-                      onChange={(event) => setExpeditionName(event.target.value)}
-                      placeholder="例: 練習試合@横浜"
-                      className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </label>
-
-                  <label className="space-y-1.5">
-                    <span className="block text-sm font-semibold">目的地</span>
-                    <input
-                      type="text"
-                      value={destination}
-                      onChange={(event) => setDestination(event.target.value)}
-                      placeholder="例: ○○小学校グラウンド"
-                      className="min-h-11 w-full rounded-xl border border-slate-300 px-3 py-2 text-base outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </label>
-                </section>
-
-                <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-base font-semibold">保護者（運転手）一覧</h3>
-                    <button
-                      type="button"
-                      onClick={addGuardian}
-                      className="min-h-10 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
-                    >
-                      + 保護者を追加
-                    </button>
-                  </div>
-
-                  <div className="space-y-3">
-                    {guardians.map((guardian) => (
-                      <div
-                        key={guardian.id}
-                        className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3"
-                      >
-                        <div className="grid gap-2 sm:grid-cols-[1fr_120px_auto]">
-                          <input
-                            type="text"
-                            value={guardian.name}
-                            onChange={(event) =>
-                              updateGuardian(guardian.id, "name", event.target.value)
-                            }
-                            placeholder="保護者名"
-                            className="min-h-10 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                          />
-                          <input
-                            type="number"
-                            min={1}
-                            value={guardian.capacity}
-                            onChange={(event) =>
-                              updateGuardian(guardian.id, "capacity", event.target.value)
-                            }
-                            placeholder="定員"
-                            className="min-h-10 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => removeGuardian(guardian.id)}
-                            className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
-                            disabled={guardians.length === 1}
-                          >
-                            削除
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2">
-                          {DRIVER_OPTIONS.map((status) => (
-                            <button
-                              key={status}
-                              type="button"
-                              onClick={() =>
-                                updateGuardian(guardian.id, "availability", status)
-                              }
-                              className={`min-h-9 rounded-xl border text-xs font-semibold ${
-                                guardian.availability === status
-                                  ? status === "配車可"
-                                    ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                                    : status === "配車不可"
-                                      ? "border-rose-300 bg-rose-50 text-rose-800"
-                                      : "border-slate-300 bg-slate-100 text-slate-800"
-                                  : "border-slate-200 bg-white text-slate-600"
-                              }`}
-                            >
-                              {status}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-                  <h3 className="text-base font-semibold">選手管理</h3>
-
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <input
-                      type="text"
-                      value={playerDraft.name}
-                      onChange={(event) =>
-                        setPlayerDraft((prev) => ({ ...prev, name: event.target.value }))
-                      }
-                      placeholder="選手名"
-                      className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                    <input
-                      type="text"
-                      value={playerDraft.grade}
-                      onChange={(event) =>
-                        setPlayerDraft((prev) => ({ ...prev, grade: event.target.value }))
-                      }
-                      placeholder="学年（例: 5年）"
-                      className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                    <input
-                      type="text"
-                      value={playerDraft.siblingGroup}
-                      onChange={(event) =>
-                        setPlayerDraft((prev) => ({
-                          ...prev,
-                          siblingGroup: event.target.value,
-                        }))
-                      }
-                      placeholder="兄弟グループ名（任意）"
-                      className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                    <input
-                      type="text"
-                      value={playerDraft.parentGuardianName}
-                      onChange={(event) =>
-                        setPlayerDraft((prev) => ({
-                          ...prev,
-                          parentGuardianName: event.target.value,
-                        }))
-                      }
-                      placeholder="保護者名（運転手と同名で優先同乗）"
-                      className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={registerPlayer}
-                    className="min-h-10 w-full rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
-                  >
-                    + 選手を登録
-                  </button>
-
-                  <div className="space-y-2">
-                    {playerMaster.length === 0 ? (
-                      <p className="text-sm text-slate-500">まだ選手が登録されていません。</p>
-                    ) : (
-                      playerMaster.map((player) => (
-                        <div
-                          key={player.id}
-                          className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="text-sm font-semibold text-slate-900">
-                                {player.name} ({player.grade})
-                              </p>
-                              <p className="mt-1 text-xs text-slate-600">
-                                兄弟: {player.siblingGroup || "なし"} / 保護者: {player.parentGuardianName || "未設定"}
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => removePlayer(player.id)}
-                              className="min-h-9 rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                            >
-                              削除
-                            </button>
-                          </div>
-
-                          <div className="grid grid-cols-3 gap-2">
-                            {ATTENDANCE_OPTIONS.map((status) => (
-                              <button
-                                key={status}
-                                type="button"
-                                onClick={() => updatePlayerAttendance(player.id, status)}
-                                className={`min-h-9 rounded-xl border text-xs font-semibold ${
-                                  player.attendance === status
-                                    ? status === "参加"
-                                      ? "border-blue-300 bg-blue-50 text-blue-800"
-                                      : status === "不参加"
-                                        ? "border-rose-300 bg-rose-50 text-rose-800"
-                                        : "border-slate-300 bg-slate-100 text-slate-800"
-                                    : "border-slate-200 bg-white text-slate-600"
-                                }`}
-                              >
-                                {status}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </section>
-
-                <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-                  <h3 className="text-base font-semibold">監督・コーチ管理</h3>
-
-                  <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
-                    <input
-                      type="text"
-                      value={staffDraft.name}
-                      onChange={(event) =>
-                        setStaffDraft((prev) => ({ ...prev, name: event.target.value }))
-                      }
-                      placeholder="氏名"
-                      className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                    <select
-                      value={staffDraft.role}
-                      onChange={(event) =>
-                        setStaffDraft((prev) => ({
-                          ...prev,
-                          role: event.target.value as StaffRole,
-                        }))
-                      }
-                      className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    >
-                      <option value="監督">監督</option>
-                      <option value="コーチ">コーチ</option>
-                    </select>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={registerStaff}
-                    className="min-h-10 w-full rounded-xl bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-500"
-                  >
-                    + 監督・コーチを登録
-                  </button>
-
-                  <div className="space-y-2">
-                    {staffMembers.length === 0 ? (
-                      <p className="text-sm text-slate-500">まだ監督・コーチが登録されていません。</p>
-                    ) : (
-                      staffMembers.map((staff) => (
-                        <div
-                          key={staff.id}
-                          className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <p className="text-sm font-semibold text-slate-900">
-                              {staff.role} {staff.name}
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => removeStaff(staff.id)}
-                              className="min-h-9 rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                            >
-                              削除
-                            </button>
-                          </div>
-
-                          <div className="grid grid-cols-3 gap-2">
-                            {ATTENDANCE_OPTIONS.map((status) => (
-                              <button
-                                key={status}
-                                type="button"
-                                onClick={() => updateStaffAttendance(staff.id, status)}
-                                className={`min-h-9 rounded-xl border text-xs font-semibold ${
-                                  staff.attendance === status
-                                    ? status === "参加"
-                                      ? "border-amber-300 bg-amber-50 text-amber-800"
-                                      : status === "不参加"
-                                        ? "border-rose-300 bg-rose-50 text-rose-800"
-                                        : "border-slate-300 bg-slate-100 text-slate-800"
-                                    : "border-slate-200 bg-white text-slate-600"
-                                }`}
-                              >
-                                {status}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </section>
-
-                <button
-                  type="button"
-                  onClick={handleAutoAllocate}
-                  className="min-h-12 w-full rounded-2xl bg-blue-600 px-4 py-3 text-base font-bold text-white shadow-sm hover:bg-blue-500 active:bg-blue-700"
-                >
-                  出欠回答を反映して自動配車する
-                </button>
-                  </>
-                )}
-              </>
-            )}
-          </section>
+              </article>
+            ))}
+          </div>
         )}
 
-        {errorMessage && (
-          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
-            {errorMessage}
-          </p>
-        )}
-
-        {allocation.length > 0 && (
-          <section className="space-y-4 rounded-2xl border border-slate-200 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold">配車結果</h2>
-              {isAdminAuthorized && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsAllocationEditMode((prev) => !prev)}
-                    className="min-h-10 rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                  >
-                    {isAllocationEditMode ? "編集を終了" : "配車を編集"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleConfirmAllocation}
-                    className="min-h-10 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
-                  >
-                    配車確定
-                  </button>
-                </div>
-              )}
+        {screen === "carpool" && selectedEvent && (
+          <div className="space-y-5">
+            <HeaderBlock
+              label="管理者配車"
+              title={selectedEvent.title}
+              body={`${formatDate(selectedEvent.starts_at)} / ${selectedEvent.place}`}
+            />
+            <div className="grid grid-cols-3 gap-3">
+              <Metric label="対象" value={`${rideTargetPlayers.length}名`} />
+              <Metric label="未割当" value={`${unassignedPlayers.length}名`} />
+              <Metric label="車両" value={`${eventAllocations.length}台`} />
             </div>
-
-            <p className="text-sm text-slate-600">
-              遠征名: {expeditionName.trim() || "未入力"} / 目的地: {destination.trim() || "未入力"}
-            </p>
-            {isAllocationConfirmed && (
-              <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
-                配車確定済みです。必要な場合は「配車を編集」で再調整してください。
+            <div className="rounded-lg bg-white p-4 shadow-soft">
+              <h3 className="font-black">回答から配車表を作成</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                車出し可能な保護者回答を車両にし、自動配車します。
               </p>
-            )}
-
-            <div className="space-y-3">
-              {allocation.map((car, index) => (
-                <article
-                  key={car.id}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
-                >
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <h3 className="text-base font-semibold text-slate-900">
-                      {index + 1}号車: {car.guardianName}
-                    </h3>
-                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">
-                      {getCarLoad(car)}/{car.capacity}名
-                    </span>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-xl bg-white p-3">
-                      <p className="mb-2 text-sm font-semibold text-slate-800">
-                        選手 ({car.players.length}名)
-                      </p>
-                      {car.players.length > 0 ? (
-                        <ul className="space-y-2 text-sm text-slate-700">
-                          {car.players.map((player) => (
-                            <li key={player.id} className="space-y-1">
-                              <p>
-                                ・{player.name} ({player.grade})
-                              </p>
-                              {isAdminAuthorized && isAllocationEditMode && (
-                                <select
-                                  value={String(car.id)}
-                                  onChange={(event) =>
-                                    handleMovePlayer(
-                                      player.id,
-                                      Number(event.target.value),
-                                    )
-                                  }
-                                  className="min-h-9 w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                                >
-                                  {allocation.map((targetCar) => (
-                                    <option key={targetCar.id} value={targetCar.id}>
-                                      {targetCar.guardianName}
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-sm text-slate-500">なし</p>
-                      )}
-                    </div>
-
-                    <div className="rounded-xl bg-white p-3">
-                      <p className="mb-2 text-sm font-semibold text-slate-800">
-                        監督・コーチ ({car.staff.length}名)
-                      </p>
-                      {car.staff.length > 0 ? (
-                        <ul className="space-y-2 text-sm text-slate-700">
-                          {car.staff.map((staff) => (
-                            <li key={staff.id} className="space-y-1">
-                              <p>
-                                ・{staff.role} {staff.name}
-                              </p>
-                              {isAdminAuthorized && isAllocationEditMode && (
-                                <select
-                                  value={String(car.id)}
-                                  onChange={(event) =>
-                                    handleMoveStaff(
-                                      staff.id,
-                                      Number(event.target.value),
-                                    )
-                                  }
-                                  className="min-h-9 w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                                >
-                                  {allocation.map((targetCar) => (
-                                    <option key={targetCar.id} value={targetCar.id}>
-                                      {targetCar.guardianName}
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-sm text-slate-500">なし</p>
-                      )}
-                    </div>
-                  </div>
-                </article>
-              ))}
-            </div>
-
-            <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-slate-800">
-                  LINE共有用テキスト
-                </h3>
+              <button
+                onClick={createRidePlanFromResponses}
+                disabled={isAllocationConfirmed}
+                className="mt-4 w-full rounded-md bg-field px-4 py-4 font-bold text-white disabled:bg-slate-300"
+              >
+                回答から配車表を作成
+              </button>
+              {isAllocationConfirmed ? (
                 <button
-                  type="button"
-                  onClick={handleCopyShareText}
-                  className="min-h-10 rounded-xl bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 active:bg-slate-900"
+                  onClick={reopenRidePlanForEdit}
+                  className="mt-2 w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
                 >
-                  コピー
+                  配車完了後に修正する
                 </button>
-              </div>
-
-              <textarea
-                readOnly
-                value={lineShareText}
-                className="h-56 w-full resize-none rounded-xl border border-slate-300 px-3 py-2 text-sm leading-relaxed text-slate-800"
-              />
-
-              {copyMessage && (
-                <p
-                  className={`text-xs font-medium ${
-                    isCopyError ? "text-red-600" : "text-emerald-700"
-                  }`}
+              ) : (
+                <button
+                  onClick={completeRidePlan}
+                  disabled={eventAllocations.length === 0}
+                  className="mt-2 w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold disabled:text-slate-300"
                 >
-                  {copyMessage}
-                </p>
+                  配車確定
+                </button>
               )}
             </div>
-          </section>
+
+            <form onSubmit={handleCreateCar} className="rounded-lg bg-white p-4 shadow-soft">
+              <h3 className="mb-3 font-black">車両を手動追加</h3>
+              <div className="grid gap-3">
+                <input
+                  value={carForm.driverName}
+                  onChange={(event) =>
+                    setCarForm((current) => ({ ...current, driverName: event.target.value }))
+                  }
+                  placeholder="運転者名"
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
+                <input
+                  value={carForm.carName}
+                  onChange={(event) =>
+                    setCarForm((current) => ({ ...current, carName: event.target.value }))
+                  }
+                  placeholder="車両名"
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
+                <input
+                  value={carForm.capacity}
+                  onChange={(event) =>
+                    setCarForm((current) => ({ ...current, capacity: event.target.value }))
+                  }
+                  type="number"
+                  min="1"
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
+                <button
+                  disabled={isAllocationConfirmed}
+                  className="rounded-md bg-night px-4 py-4 font-bold text-white disabled:bg-slate-300"
+                >
+                  車両追加
+                </button>
+              </div>
+            </form>
+
+            <div className="rounded-lg bg-white p-4 shadow-soft">
+              <h3 className="mb-3 font-black">自動配車条件</h3>
+              <AutoAssignToggle
+                checked={autoAssignOptions.rideWithParentDriver}
+                label="運転手の子どもを同じ車にする"
+                onChange={(checked) =>
+                  setAutoAssignOptions((current) => ({
+                    ...current,
+                    rideWithParentDriver: checked
+                  }))
+                }
+              />
+              <AutoAssignToggle
+                checked={autoAssignOptions.keepSiblingsTogether}
+                label="兄弟は同じ車にする"
+                onChange={(checked) =>
+                  setAutoAssignOptions((current) => ({
+                    ...current,
+                    keepSiblingsTogether: checked
+                  }))
+                }
+              />
+              <AutoAssignToggle
+                checked={autoAssignOptions.preferSameGrade}
+                label="学年が同じ選手を優先して同乗にする"
+                onChange={(checked) =>
+                  setAutoAssignOptions((current) => ({
+                    ...current,
+                    preferSameGrade: checked
+                  }))
+                }
+              />
+              <button
+                onClick={autoAssignExistingCars}
+                disabled={eventAllocations.length === 0 || isAllocationConfirmed}
+                className="mt-3 w-full rounded-md bg-field px-4 py-4 font-bold text-white disabled:bg-slate-300"
+              >
+                既存車両で自動配車
+              </button>
+              <button
+                onClick={copyRidePlanText}
+                disabled={eventAllocations.length === 0}
+                className="mt-2 w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold disabled:text-slate-300"
+              >
+                配車表LINE文コピー
+              </button>
+            </div>
+
+            <div className="rounded-lg bg-white p-4 shadow-soft">
+              <h3 className="mb-3 font-black">選手割当</h3>
+              <div className="space-y-3">
+                {players.map((player) => {
+                  const row = eventAttendance.find((item) => item.player_id === player.id);
+                  const assignedCar = eventAllocations.find((car) =>
+                    car.player_ids.includes(player.id)
+                  );
+                  return (
+                    <div key={player.id} className="grid gap-2 border-b border-slate-100 pb-3">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold">
+                          {player.name} {player.grade}年
+                        </span>
+                        <span
+                          className={`rounded-md border px-3 py-1 text-sm font-bold ${
+                            statusStyles[row?.status ?? "未回答"]
+                          }`}
+                        >
+                          {row?.status ?? "未回答"}
+                        </span>
+                      </div>
+                      <select
+                        value={assignedCar?.id ?? ""}
+                        onChange={(event) => assignPlayerToCar(player.id, event.target.value)}
+                        disabled={row?.status === "欠席" || isAllocationConfirmed}
+                        className="rounded-md border border-slate-200 px-4 py-3 disabled:bg-slate-100"
+                      >
+                        <option value="">未割当</option>
+                        {eventAllocations.map((car) => (
+                          <option key={car.id} value={car.id}>
+                            {car.car_name}（{car.driver_name}）
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <AllocationResult
+              allocations={eventAllocations}
+              players={players}
+              onDelete={deleteCar}
+              locked={isAllocationConfirmed}
+            />
+          </div>
         )}
-      </main>
+
+        {screen === "summary" && selectedEvent && (
+          <div className="space-y-5">
+            <HeaderBlock
+              label="参加人数集計"
+              title={selectedEvent.title}
+              body={`${formatDate(selectedEvent.starts_at)} / ${selectedEvent.place}`}
+            />
+            <div className="grid grid-cols-2 gap-3">
+              {(["参加", "欠席", "遅刻", "未回答"] as AttendanceStatus[]).map(
+                (status) => (
+                  <Metric key={status} label={status} value={`${summary[status]}名`} />
+                )
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-black/5 bg-white px-3 pb-3 pt-3">
+        <div className="mx-auto grid max-w-3xl grid-cols-5 gap-2">
+          <TabButton active={screen === "home"} onClick={() => setScreen("home")}>
+            ホーム
+          </TabButton>
+          <TabButton active={screen === "events"} onClick={() => setScreen("events")}>
+            遠征
+          </TabButton>
+          <TabButton active={screen === "parent"} onClick={() => setScreen("parent")}>
+            入力
+          </TabButton>
+          <TabButton active={screen === "carpool"} onClick={() => setScreen("carpool")}>
+            配車
+          </TabButton>
+          <TabButton active={screen === "summary"} onClick={() => setScreen("summary")}>
+            集計
+          </TabButton>
+        </div>
+      </nav>
+    </main>
+  );
+}
+
+function DashboardCard({
+  label,
+  title,
+  body
+}: {
+  label: string;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div className="rounded-lg bg-white p-5 shadow-soft">
+      <p className="text-sm font-bold text-clay">{label}</p>
+      <h2 className="mt-1 text-2xl font-black">{title}</h2>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
     </div>
+  );
+}
+
+function HeaderBlock({
+  label,
+  title,
+  body
+}: {
+  label: string;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div>
+      <p className="text-sm font-bold text-clay">{label}</p>
+      <h2 className="text-2xl font-black">{title}</h2>
+      <p className="mt-1 text-sm text-slate-600">{body}</p>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-white p-4 shadow-soft">
+      <p className="text-sm font-bold text-slate-500">{label}</p>
+      <p className="mt-2 text-3xl font-black">{value}</p>
+    </div>
+  );
+}
+
+function AllocationResult({
+  allocations,
+  players,
+  locked,
+  onDelete
+}: {
+  allocations: AllocationRow[];
+  players: PlayerRow[];
+  locked?: boolean;
+  onDelete?: (id: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      {allocations.map((car) => (
+        <article key={car.id} className="rounded-lg bg-white p-4 shadow-soft">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-black">{car.car_name}</h3>
+              <p className="mt-1 text-sm text-slate-600">運転者: {car.driver_name}</p>
+            </div>
+            {onDelete && (
+              <button
+                disabled={locked}
+                onClick={() => onDelete(car.id)}
+                className="rounded-md border border-rose-100 bg-white px-3 py-2 text-sm font-bold text-rose-700 disabled:text-slate-300"
+              >
+                削除
+              </button>
+            )}
+          </div>
+          <div className="mb-3 rounded-md bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">
+            {car.player_ids.length} / {car.capacity}名
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {car.player_ids.length === 0 && (
+              <span className="text-sm font-bold text-slate-400">未割当</span>
+            )}
+            {car.player_ids.map((playerId) => {
+              const player = players.find((item) => item.id === playerId);
+              return (
+                <span
+                  key={playerId}
+                  className="rounded-md bg-slate-100 px-3 py-2 text-sm font-bold"
+                >
+                  {player?.name ?? "不明"}
+                </span>
+              );
+            })}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function AutoAssignToggle({
+  checked,
+  label,
+  onChange
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="mb-2 flex items-center justify-between rounded-md bg-slate-50 px-3 py-3">
+      <span className="text-sm font-bold text-slate-700">{label}</span>
+      <input
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        type="checkbox"
+        className="h-6 w-6 accent-field"
+      />
+    </label>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-md px-2 py-3 text-sm font-bold ${
+        active ? "bg-night text-white" : "bg-slate-100 text-slate-600"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
