@@ -43,6 +43,8 @@ const initialParentForm = {
   note: ""
 };
 
+const defaultAdminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL ?? "";
+
 const appBackgroundStyle = {
   backgroundImage:
     "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(247,244,234,0.96)), radial-gradient(circle at top left, rgba(40,116,90,0.12), transparent 32rem)"
@@ -162,8 +164,9 @@ function createAutoAssignedCars(
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("login");
-  const [adminEmail, setAdminEmail] = useState("manager@example.com");
+  const [adminEmail, setAdminEmail] = useState(defaultAdminEmail);
   const [password, setPassword] = useState("");
+  const [loginErrorEmail, setLoginErrorEmail] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -210,6 +213,7 @@ export default function Home() {
         : [],
     [players, selectedGuardian]
   );
+  const selectedPlayer = players.find((player) => player.id === parentForm.playerId);
   const selectedAttendance = eventAttendance.find(
     (row) => row.player_id === parentForm.playerId
   );
@@ -331,18 +335,23 @@ export default function Home() {
       return;
     }
 
+    const submittedEmail = adminEmail.trim();
+    setLoginErrorEmail("");
+    setMessage("");
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({
-      email: adminEmail,
+      email: submittedEmail,
       password
     });
     setLoading(false);
 
     if (error) {
-      setMessage(error.message);
+      setLoginErrorEmail(submittedEmail);
+      setMessage("メールアドレスまたはパスワードが違います");
       return;
     }
 
+    setAdminEmail(submittedEmail);
     setIsAdmin(true);
     setScreen("home");
     await loadSessionAndData();
@@ -633,6 +642,8 @@ export default function Home() {
               value={adminEmail}
               onChange={(event) => setAdminEmail(event.target.value)}
               type="email"
+              autoComplete="email"
+              required
               className="mb-4 w-full rounded-md border border-slate-200 px-4 py-3"
             />
             <label className="mb-2 block text-sm font-bold">パスワード</label>
@@ -640,13 +651,21 @@ export default function Home() {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               type="password"
-              className="mb-5 w-full rounded-md border border-slate-200 px-4 py-3"
+              autoComplete="current-password"
+              required
+              className="mb-3 w-full rounded-md border border-slate-200 px-4 py-3"
             />
+            {loginErrorEmail && (
+              <p className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">
+                送信したメールアドレス: {loginErrorEmail}
+              </p>
+            )}
             <button
+              type="submit"
               disabled={loading}
               className="w-full rounded-md bg-field px-4 py-4 font-bold text-white disabled:bg-slate-300"
             >
-              ログイン
+              {loading ? "ログイン中..." : "管理者としてログイン"}
             </button>
           </form>
           {message && <p className="mt-4 text-sm font-bold text-rose-700">{message}</p>}
@@ -1150,6 +1169,74 @@ export default function Home() {
         </div>
       </nav>
     </main>
+  );
+}
+
+function getBrandString(brand: unknown, keys: string[]) {
+  if (typeof brand !== "object" || brand === null) return "";
+  const brandRecord = brand as Record<string, unknown>;
+
+  for (const key of keys) {
+    const value = brandRecord[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+function TeamLogo({
+  brand,
+  teamName,
+  size = "md"
+}: {
+  brand?: unknown;
+  teamName: string;
+  size?: string;
+}) {
+  const logoUrl = getBrandString(brand, [
+    "logoUrl",
+    "logo_url",
+    "logo",
+    "teamLogoUrl",
+    "team_logo_url",
+    "imageUrl",
+    "image_url"
+  ]);
+  const primaryColor = getBrandString(brand, [
+    "primaryColor",
+    "primary_color",
+    "mainColor",
+    "main_color"
+  ]) || "#28745a";
+  const accentColor = getBrandString(brand, [
+    "accentColor",
+    "accent_color",
+    "secondaryColor",
+    "secondary_color"
+  ]) || "#b85f38";
+  const sizeClass =
+    {
+      sm: "h-9 w-9 text-sm",
+      md: "h-12 w-12 text-base",
+      lg: "h-16 w-16 text-xl"
+    }[size] ?? "h-12 w-12 text-base";
+  const initial = teamName.trim().charAt(0) || "球";
+
+  return (
+    <div
+      aria-label={`${teamName} ロゴ`}
+      className={`${sizeClass} flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/70 bg-cover bg-center font-black text-white shadow-soft`}
+      style={
+        logoUrl
+          ? { backgroundImage: `url(${logoUrl})` }
+          : { background: `linear-gradient(135deg, ${primaryColor}, ${accentColor})` }
+      }
+      title={`${teamName} ロゴ`}
+    >
+      {!logoUrl && <span>{initial}</span>}
+    </div>
   );
 }
 
