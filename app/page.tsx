@@ -28,6 +28,26 @@ type AutoAssignOptions = {
   keepSiblingsTogether: boolean;
   rideWithParentDriver: boolean;
 };
+type GuardianDraft = {
+  localId: string;
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  note: string;
+  canDrive: boolean;
+  capacity: string;
+  isNew: boolean;
+};
+type PlayerDraft = {
+  localId: string;
+  id: string;
+  name: string;
+  grade: string;
+  guardianId: string;
+  familyGroup: string;
+  isNew: boolean;
+};
 
 const statusStyles: Record<AttendanceStatus, string> = {
   "参加": "bg-field text-white border-field",
@@ -37,6 +57,21 @@ const statusStyles: Record<AttendanceStatus, string> = {
 };
 
 const attendanceStatuses: AttendanceStatus[] = ["参加", "欠席", "遅刻", "未回答"];
+const tableInputClass =
+  "w-full min-w-36 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-600";
+const tableSelectClass =
+  "w-full min-w-32 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-600";
+const formFieldClass =
+  "rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-600";
+const tableHeaderClass =
+  "whitespace-nowrap border border-slate-200 bg-slate-100 px-3 py-2 text-left text-xs font-black text-night";
+const tableCellClass = "border border-slate-200 bg-white px-2 py-2 align-top";
+const secondaryButtonClass =
+  "rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-black text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-600";
+const primaryButtonClass =
+  "rounded-md bg-field px-3 py-2 text-sm font-black text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600";
+const dangerButtonClass =
+  "rounded-md border border-rose-200 bg-white px-3 py-2 text-sm font-black text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-200 active:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-600";
 const gradeOptions = [
   "年少",
   "年中",
@@ -119,6 +154,38 @@ function getPlayer(players: PlayerRow[], playerId: string) {
 
 function getGuardian(guardians: GuardianRow[], guardianId: string | null) {
   return guardians.find((guardian) => guardian.id === guardianId);
+}
+
+function createLocalId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`;
+}
+
+function createGuardianDraft(guardian?: GuardianRow): GuardianDraft {
+  return {
+    localId: createLocalId(),
+    id: guardian?.id ?? "",
+    name: guardian?.name ?? "",
+    email: guardian?.email ?? "",
+    phone: guardian?.phone ?? "",
+    note: guardian?.note ?? "",
+    canDrive: guardian?.can_drive_default ?? false,
+    capacity: String(guardian?.car_capacity_default ?? 4),
+    isNew: !guardian
+  };
+}
+
+function createPlayerDraft(player?: PlayerRow): PlayerDraft {
+  return {
+    localId: createLocalId(),
+    id: player?.id ?? "",
+    name: player?.name ?? "",
+    grade: player ? normalizeGrade(player.grade) : defaultGrade,
+    guardianId: player?.guardian_id ?? "",
+    familyGroup: player?.family_group ?? "",
+    isNew: !player
+  };
 }
 
 function normalizeGrade(value: string | number | null | undefined) {
@@ -252,7 +319,9 @@ export default function Home() {
   const [eventForm, setEventForm] = useState(initialEventForm);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [guardianForm, setGuardianForm] = useState(initialGuardianForm);
+  const [guardianDrafts, setGuardianDrafts] = useState<GuardianDraft[]>([]);
   const [playerForm, setPlayerForm] = useState(initialPlayerForm);
+  const [playerDrafts, setPlayerDrafts] = useState<PlayerDraft[]>([]);
   const [parentForm, setParentForm] = useState(initialParentForm);
   const [carForm, setCarForm] = useState({
     driverName: "",
@@ -378,6 +447,14 @@ export default function Home() {
       note: firstAttendance?.note ?? ""
     }));
   }, [eventAttendance, guardianPlayers, selectedGuardian]);
+
+  useEffect(() => {
+    setGuardianDrafts(guardians.map((guardian) => createGuardianDraft(guardian)));
+  }, [guardians]);
+
+  useEffect(() => {
+    setPlayerDrafts(players.map((player) => createPlayerDraft(player)));
+  }, [players]);
 
   async function loadSessionAndData(
     eventIdFromUrl?: string | null,
@@ -696,6 +773,134 @@ export default function Home() {
     if (playerForm.id === playerId) setPlayerForm(initialPlayerForm);
     setMessage("選手を削除しました。");
     await loadSessionAndData(selectedEventId);
+  }
+
+  function updateGuardianDraft(localId: string, patch: Partial<GuardianDraft>) {
+    setGuardianDrafts((current) =>
+      current.map((draft) => (draft.localId === localId ? { ...draft, ...patch } : draft))
+    );
+  }
+
+  function updatePlayerDraft(localId: string, patch: Partial<PlayerDraft>) {
+    setPlayerDrafts((current) =>
+      current.map((draft) => (draft.localId === localId ? { ...draft, ...patch } : draft))
+    );
+  }
+
+  function addGuardianDraft() {
+    setGuardianDrafts((current) => [...current, createGuardianDraft()]);
+  }
+
+  function addPlayerDraft() {
+    setPlayerDrafts((current) => [...current, createPlayerDraft()]);
+  }
+
+  async function persistGuardianDraft(draft: GuardianDraft) {
+    if (!supabase || !isAdmin) return false;
+    if (!draft.name.trim() || !draft.email.trim()) {
+      setMessage("保護者氏名とメールアドレスを入力してください。");
+      return false;
+    }
+
+    const payload = {
+      name: draft.name.trim(),
+      email: draft.email.trim(),
+      phone: draft.phone.trim() || null,
+      note: draft.note.trim() || null,
+      can_drive_default: draft.canDrive,
+      car_capacity_default: Math.max(Number(draft.capacity) || 1, 1)
+    };
+    const result = draft.id
+      ? await supabase.from("guardians").update(payload).eq("id", draft.id)
+      : await supabase.from("guardians").insert(payload);
+
+    if (result.error) {
+      setMessage(`保護者の保存に失敗しました: ${result.error.message}`);
+      return false;
+    }
+
+    return true;
+  }
+
+  async function saveGuardianDraft(draft: GuardianDraft) {
+    const saved = await persistGuardianDraft(draft);
+    if (!saved) return;
+    setMessage("保存しました");
+    await loadSessionAndData(selectedEventId);
+  }
+
+  async function saveAllGuardianDrafts() {
+    for (const draft of guardianDrafts) {
+      const saved = await persistGuardianDraft(draft);
+      if (!saved) return;
+    }
+    setMessage("保存しました");
+    await loadSessionAndData(selectedEventId);
+  }
+
+  async function deleteGuardianDraft(draft: GuardianDraft) {
+    if (draft.isNew || !draft.id) {
+      if (!window.confirm("この未保存の保護者行を削除しますか？")) return;
+      setGuardianDrafts((current) => current.filter((item) => item.localId !== draft.localId));
+      return;
+    }
+
+    await deleteGuardian(draft.id);
+  }
+
+  async function persistPlayerDraft(draft: PlayerDraft) {
+    if (!supabase || !isAdmin) return false;
+    if (!draft.name.trim()) {
+      setMessage("選手氏名を入力してください。");
+      return false;
+    }
+
+    const selectedGuardianForPlayer = guardians.find(
+      (guardian) => guardian.id === draft.guardianId
+    );
+    const payload = {
+      name: draft.name.trim(),
+      grade: normalizeGrade(draft.grade),
+      guardian_id: draft.guardianId || null,
+      family_group: draft.familyGroup.trim() || draft.name.trim(),
+      parent_name: selectedGuardianForPlayer?.name ?? ""
+    };
+    const result = draft.id
+      ? await supabase.from("players").update(payload).eq("id", draft.id)
+      : await supabase.from("players").insert(payload);
+
+    if (result.error) {
+      setMessage(`選手の保存に失敗しました: ${result.error.message}`);
+      return false;
+    }
+
+    return true;
+  }
+
+  async function savePlayerDraft(draft: PlayerDraft) {
+    const saved = await persistPlayerDraft(draft);
+    if (!saved) return;
+    setMessage("保存しました");
+    await loadSessionAndData(selectedEventId);
+  }
+
+  async function saveAllPlayerDrafts() {
+    for (const draft of playerDrafts) {
+      const saved = await persistPlayerDraft(draft);
+      if (!saved) return;
+    }
+    setMessage("保存しました");
+    await loadSessionAndData(selectedEventId);
+  }
+
+  async function deletePlayerDraft(draft: PlayerDraft) {
+    if (draft.isNew || !draft.id) {
+      if (!window.confirm("この未保存の選手行を削除しますか？")) return;
+      setPlayerDrafts((current) => current.filter((item) => item.localId !== draft.localId));
+      return;
+    }
+
+    await deletePlayer(draft.id);
   }
 
   async function handleParentSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1017,7 +1222,7 @@ export default function Home() {
                 if (!selectedEventId && events[0]) setSelectedEventId(events[0].id);
                 navigateTo("parent");
               }}
-              className="rounded-lg border border-emerald-200 bg-white px-5 py-7 text-left text-night shadow-soft"
+              className="rounded-lg border border-emerald-200 bg-white px-5 py-7 text-left text-night shadow-soft hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-100"
             >
               <span className="block text-2xl font-black">保護者用</span>
               <span className="mt-2 block text-sm font-bold text-slate-600">
@@ -1030,7 +1235,7 @@ export default function Home() {
                 setMessage("");
                 navigateTo(isAdmin ? "home" : "adminLogin");
               }}
-              className="rounded-lg border border-night bg-night px-5 py-7 text-left text-white shadow-soft"
+              className="rounded-lg border border-night bg-night px-5 py-7 text-left text-white shadow-soft hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-night/30 active:bg-black"
             >
               <span className="block text-2xl font-black">管理者用</span>
               <span className="mt-2 block text-sm font-bold opacity-90">
@@ -1065,7 +1270,7 @@ export default function Home() {
               type="email"
               autoComplete="email"
               required
-              className="mb-4 w-full rounded-md border border-slate-200 px-4 py-3"
+              className="mb-4 w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
             />
             <label className="mb-2 block text-sm font-bold">パスワード</label>
             <input
@@ -1074,7 +1279,7 @@ export default function Home() {
               type="password"
               autoComplete="current-password"
               required
-              className="mb-3 w-full rounded-md border border-slate-200 px-4 py-3"
+              className="mb-3 w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
             />
             {loginErrorEmail && (
               <p className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">
@@ -1084,7 +1289,7 @@ export default function Home() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full rounded-md bg-field px-4 py-4 font-bold text-white disabled:bg-slate-300"
+              className="w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600"
             >
               {loading ? "ログイン中..." : "管理者としてログイン"}
             </button>
@@ -1093,14 +1298,14 @@ export default function Home() {
             <button
               type="button"
               onClick={goBack}
-              className="rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+              className="rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               戻る
             </button>
             <button
               type="button"
               onClick={goHome}
-              className="rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+              className="rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               ホームに戻る
             </button>
@@ -1147,7 +1352,7 @@ export default function Home() {
                   setSelectedEventId(event.target.value || null);
                   setMessage("");
                 }}
-                className="w-full rounded-md border border-slate-200 px-4 py-3"
+                className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
               >
                 {events.map((event) => (
                   <option key={event.id} value={event.id}>
@@ -1181,7 +1386,7 @@ export default function Home() {
                   setParentForm((current) => ({ ...current, guardianId }));
                   setMessage("");
                 }}
-                className="mb-4 w-full rounded-md border border-slate-200 px-4 py-3"
+                className="mb-4 w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
               >
                 <option value="">保護者を選択</option>
                 {guardians.map((guardian) => (
@@ -1231,7 +1436,7 @@ export default function Home() {
                                     className={`rounded-md border px-3 py-3 font-bold ${
                                       currentStatus === status
                                         ? statusStyles[status]
-                                        : "border-slate-200 bg-white text-slate-600"
+                                        : "border-slate-200 bg-white text-night hover:bg-slate-100 active:bg-slate-200"
                                     }`}
                                   >
                                     {status}
@@ -1261,7 +1466,7 @@ export default function Home() {
                           className={`rounded-md border px-3 py-3 font-bold ${
                             parentForm.guardianStatus === status
                               ? statusStyles[status]
-                              : "border-slate-200 bg-white text-slate-600"
+                              : "border-slate-200 bg-white text-night hover:bg-slate-100 active:bg-slate-200"
                           }`}
                         >
                           {status}
@@ -1270,7 +1475,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <label className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-3 font-bold">
+                  <label className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-3 font-bold text-night">
                     車出しできます
                     <input
                       checked={parentForm.canDrive}
@@ -1296,7 +1501,7 @@ export default function Home() {
                           }))
                         }
                         placeholder="運転者名"
-                        className="rounded-md border border-slate-200 px-4 py-3"
+                        className={formFieldClass}
                       />
                       <input
                         value={parentForm.capacity}
@@ -1309,7 +1514,7 @@ export default function Home() {
                         type="number"
                         min="1"
                         placeholder="乗車可能人数"
-                        className="rounded-md border border-slate-200 px-4 py-3"
+                        className="rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
                       />
                     </div>
                   )}
@@ -1321,12 +1526,12 @@ export default function Home() {
                     }
                     placeholder="備考"
                     rows={3}
-                    className="w-full rounded-md border border-slate-200 px-4 py-3"
+                    className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
                   />
 
                   <button
                     disabled={guardianPlayers.length === 0}
-                    className="w-full rounded-md bg-field px-4 py-4 font-bold text-white disabled:bg-slate-300"
+                    className="w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600"
                   >
                     保存する
                   </button>
@@ -1369,13 +1574,13 @@ export default function Home() {
           <div className="grid gap-2">
             <button
               onClick={goBack}
-              className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+              className="w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               戻る
             </button>
             <button
               onClick={goHome}
-              className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+              className="w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               ホームに戻る
             </button>
@@ -1404,19 +1609,19 @@ export default function Home() {
           <div className="flex shrink-0 flex-wrap gap-2">
             <button
               onClick={goBack}
-              className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-black text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               戻る
             </button>
             <button
               onClick={goHome}
-              className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-black text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               ホームに戻る
             </button>
             <button
               onClick={handleLogout}
-              className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-black text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               ログアウト
             </button>
@@ -1480,7 +1685,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={resetEventForm}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
+                    className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-black text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
                   >
                     新規作成に戻る
                   </button>
@@ -1493,7 +1698,7 @@ export default function Home() {
                     setEventForm((current) => ({ ...current, title: event.target.value }))
                   }
                   placeholder="イベント名"
-                  className="rounded-md border border-slate-200 px-4 py-3"
+                  className={formFieldClass}
                 />
                 <select
                   value={eventForm.eventType}
@@ -1503,7 +1708,7 @@ export default function Home() {
                       eventType: event.target.value as EventType
                     }))
                   }
-                  className="rounded-md border border-slate-200 px-4 py-3"
+                  className={formFieldClass}
                 >
                   <option>練習</option>
                   <option>試合</option>
@@ -1515,7 +1720,7 @@ export default function Home() {
                     setEventForm((current) => ({ ...current, startsAt: event.target.value }))
                   }
                   type="datetime-local"
-                  className="rounded-md border border-slate-200 px-4 py-3"
+                  className={formFieldClass}
                 />
                 <input
                   value={eventForm.place}
@@ -1523,9 +1728,9 @@ export default function Home() {
                     setEventForm((current) => ({ ...current, place: event.target.value }))
                   }
                   placeholder="場所"
-                  className="rounded-md border border-slate-200 px-4 py-3"
+                  className={formFieldClass}
                 />
-                <button className="rounded-md bg-night px-4 py-4 font-bold text-white">
+                <button className="rounded-md bg-night px-4 py-4 font-bold text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-night/30 active:bg-black">
                   {editingEventId ? "遠征を更新" : "Supabaseにイベント保存"}
                 </button>
               </div>
@@ -1556,7 +1761,7 @@ export default function Home() {
                       setSelectedEventId(event.id);
                       navigateTo("parent");
                     }}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
+                    className="rounded-md border border-slate-300 bg-white px-3 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
                   >
                     入力画面
                   </button>
@@ -1574,7 +1779,7 @@ export default function Home() {
                       setSelectedEventId(event.id);
                       navigateTo("summary");
                     }}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
+                    className="rounded-md border border-slate-300 bg-white px-3 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
                   >
                     集計
                   </button>
@@ -1583,19 +1788,19 @@ export default function Home() {
                       setSelectedEventId(event.id);
                       void copyShareText(event);
                     }}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
+                    className="rounded-md border border-slate-300 bg-white px-3 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
                   >
                     LINE文コピー
                   </button>
                   <button
                     onClick={() => startEditEvent(event)}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
+                    className="rounded-md border border-slate-300 bg-white px-3 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
                   >
                     編集
                   </button>
                   <button
                     onClick={() => deleteEvent(event.id)}
-                    className="rounded-md border border-rose-100 bg-white px-3 py-3 font-bold text-rose-700"
+                    className="rounded-md border border-rose-200 bg-white px-3 py-3 font-bold text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-200 active:bg-rose-100"
                   >
                     イベント削除
                   </button>
@@ -1610,154 +1815,125 @@ export default function Home() {
             <HeaderBlock
               label="管理者設定"
               title="保護者管理"
-              body="保護者の連絡先、車出し初期設定、乗車可能人数をSupabaseに保存します。"
+              body="Excelのように一覧表から保護者情報を直接編集できます。"
             />
-            <form onSubmit={handleGuardianSubmit} className="rounded-lg bg-white p-4 shadow-soft">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <h3 className="text-lg font-black">
-                  {guardianForm.id ? "保護者を編集" : "保護者を追加"}
-                </h3>
-                {guardianForm.id && (
-                  <button
-                    type="button"
-                    onClick={() => setGuardianForm(initialGuardianForm)}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
-                  >
-                    新規追加に戻る
-                  </button>
-                )}
-              </div>
-              <div className="grid gap-3">
-                <input
-                  value={guardianForm.name}
-                  onChange={(event) =>
-                    setGuardianForm((current) => ({ ...current, name: event.target.value }))
-                  }
-                  placeholder="保護者名"
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                />
-                <input
-                  value={guardianForm.email}
-                  onChange={(event) =>
-                    setGuardianForm((current) => ({ ...current, email: event.target.value }))
-                  }
-                  type="email"
-                  placeholder="メールアドレス"
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                />
-                <input
-                  value={guardianForm.phone}
-                  onChange={(event) =>
-                    setGuardianForm((current) => ({ ...current, phone: event.target.value }))
-                  }
-                  placeholder="電話番号"
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                />
-                <textarea
-                  value={guardianForm.note}
-                  onChange={(event) =>
-                    setGuardianForm((current) => ({ ...current, note: event.target.value }))
-                  }
-                  placeholder="備考"
-                  rows={3}
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                />
-                <label className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-3 font-bold">
-                  車出し初期可否
-                  <input
-                    checked={guardianForm.canDrive}
-                    onChange={(event) =>
-                      setGuardianForm((current) => ({
-                        ...current,
-                        canDrive: event.target.checked
-                      }))
-                    }
-                    type="checkbox"
-                    className="h-6 w-6 accent-field"
-                  />
-                </label>
-                <input
-                  value={guardianForm.capacity}
-                  onChange={(event) =>
-                    setGuardianForm((current) => ({ ...current, capacity: event.target.value }))
-                  }
-                  type="number"
-                  min="1"
-                  placeholder="乗車可能人数"
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                />
-                <button className="rounded-md bg-field px-4 py-4 font-bold text-white">
-                  {guardianForm.id ? "保護者を更新" : "保護者を追加"}
+            <div className="rounded-lg bg-white p-4 shadow-soft">
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button type="button" onClick={addGuardianDraft} className={primaryButtonClass}>
+                  保護者を追加
+                </button>
+                <button type="button" onClick={saveAllGuardianDrafts} className={secondaryButtonClass}>
+                  すべて保存
                 </button>
               </div>
-            </form>
+              <div className="overflow-x-auto">
+                <table className="min-w-[1120px] border-collapse text-night">
+                  <thead>
+                    <tr>
+                      <th className={tableHeaderClass}>保護者氏名</th>
+                      <th className={tableHeaderClass}>メールアドレス</th>
+                      <th className={tableHeaderClass}>電話番号</th>
+                      <th className={tableHeaderClass}>車出し初期可否</th>
+                      <th className={tableHeaderClass}>乗車可能人数</th>
+                      <th className={tableHeaderClass}>備考</th>
+                      <th className={tableHeaderClass}>紐づく選手</th>
+                      <th className={tableHeaderClass}>保存</th>
+                      <th className={tableHeaderClass}>削除</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {guardianDrafts.length === 0 && (
+                      <tr>
+                        <td colSpan={9} className="border border-slate-200 bg-white px-3 py-5 text-center text-sm font-bold text-slate-600">
+                          保護者がまだ登録されていません。
+                        </td>
+                      </tr>
+                    )}
+                    {guardianDrafts.map((draft) => {
+                      const linkedPlayers = players.filter((player) => player.guardian_id === draft.id);
 
-            <div className="space-y-3">
-              {guardians.length === 0 && (
-                <EmptyState
-                  title="保護者がまだ登録されていません。"
-                  body="保護者を追加すると、参加確認URLから出欠と車出し可否を入力できるようになります。"
-                />
-              )}
-              {guardians.map((guardian) => {
-                const linkedPlayers = players.filter(
-                  (player) => player.guardian_id === guardian.id
-                );
-
-                return (
-                  <article key={guardian.id} className="rounded-lg bg-white p-4 shadow-soft">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-lg font-black">{guardian.name}</h3>
-                        <p className="mt-1 text-sm text-slate-600">{guardian.email}</p>
-                        <p className="mt-1 text-sm text-slate-500">
-                          {guardian.phone || "電話番号未登録"} / 選手 {linkedPlayers.length}名
-                        </p>
-                        {guardian.note && (
-                          <p className="mt-2 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                            {guardian.note}
-                          </p>
-                        )}
-                      </div>
-                      <span className="rounded-md bg-slate-100 px-3 py-1 text-sm font-bold">
-                        {guardian.can_drive_default
-                          ? `${guardian.car_capacity_default}名`
-                          : "車出しなし"}
-                      </span>
-                    </div>
-                    <div className="mt-4 rounded-md bg-slate-50 p-3">
-                      <p className="text-sm font-black text-slate-700">紐づく選手</p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {linkedPlayers.length === 0 && (
-                          <span className="text-sm font-bold text-slate-400">未設定</span>
-                        )}
-                        {linkedPlayers.map((player) => (
-                          <span
-                            key={player.id}
-                            className="rounded-md bg-white px-3 py-2 text-sm font-bold"
-                          >
-                            {player.name} {normalizeGrade(player.grade)}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="mt-4 grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => startEditGuardian(guardian)}
-                        className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
-                      >
-                        編集
-                      </button>
-                      <button
-                        onClick={() => deleteGuardian(guardian.id)}
-                        className="rounded-md border border-rose-100 bg-white px-3 py-3 font-bold text-rose-700"
-                      >
-                        削除
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
+                      return (
+                        <tr key={draft.localId}>
+                          <td className={tableCellClass}>
+                            <input
+                              value={draft.name}
+                              onChange={(event) => updateGuardianDraft(draft.localId, { name: event.target.value })}
+                              className={tableInputClass}
+                              placeholder="保護者氏名"
+                            />
+                          </td>
+                          <td className={tableCellClass}>
+                            <input
+                              value={draft.email}
+                              onChange={(event) => updateGuardianDraft(draft.localId, { email: event.target.value })}
+                              className={tableInputClass}
+                              type="email"
+                              placeholder="mail@example.com"
+                            />
+                          </td>
+                          <td className={tableCellClass}>
+                            <input
+                              value={draft.phone}
+                              onChange={(event) => updateGuardianDraft(draft.localId, { phone: event.target.value })}
+                              className={tableInputClass}
+                              placeholder="電話番号"
+                            />
+                          </td>
+                          <td className={`${tableCellClass} text-center`}>
+                            <input
+                              checked={draft.canDrive}
+                              onChange={(event) => updateGuardianDraft(draft.localId, { canDrive: event.target.checked })}
+                              type="checkbox"
+                              className="h-6 w-6 accent-field"
+                              aria-label="車出し初期可否"
+                            />
+                          </td>
+                          <td className={tableCellClass}>
+                            <input
+                              value={draft.capacity}
+                              onChange={(event) => updateGuardianDraft(draft.localId, { capacity: event.target.value })}
+                              className="w-full min-w-24 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
+                              type="number"
+                              min="1"
+                            />
+                          </td>
+                          <td className={tableCellClass}>
+                            <textarea
+                              value={draft.note}
+                              onChange={(event) => updateGuardianDraft(draft.localId, { note: event.target.value })}
+                              className={`${tableInputClass} min-w-48`}
+                              rows={2}
+                              placeholder="備考"
+                            />
+                          </td>
+                          <td className={tableCellClass}>
+                            <div className="flex min-w-44 flex-wrap gap-1">
+                              {linkedPlayers.length === 0 && (
+                                <span className="text-xs font-bold text-slate-500">未設定</span>
+                              )}
+                              {linkedPlayers.map((player) => (
+                                <span key={player.id} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-bold text-night">
+                                  {player.name}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className={tableCellClass}>
+                            <button type="button" onClick={() => saveGuardianDraft(draft)} className={primaryButtonClass}>
+                              保存
+                            </button>
+                          </td>
+                          <td className={tableCellClass}>
+                            <button type="button" onClick={() => deleteGuardianDraft(draft)} className={dangerButtonClass}>
+                              削除
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -1767,122 +1943,97 @@ export default function Home() {
             <HeaderBlock
               label="管理者設定"
               title="選手管理"
-              body="選手名、学年、保護者、兄弟グループをSupabaseに保存します。"
+              body="Excelのように一覧表から選手と親子関係を直接編集できます。"
             />
-            <form onSubmit={handlePlayerSubmit} className="rounded-lg bg-white p-4 shadow-soft">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <h3 className="text-lg font-black">
-                  {playerForm.id ? "選手を編集" : "選手を追加"}
-                </h3>
-                {playerForm.id && (
-                  <button
-                    type="button"
-                    onClick={() => setPlayerForm(initialPlayerForm)}
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
-                  >
-                    新規追加に戻る
-                  </button>
-                )}
-              </div>
-              <div className="grid gap-3">
-                <input
-                  value={playerForm.name}
-                  onChange={(event) =>
-                    setPlayerForm((current) => ({ ...current, name: event.target.value }))
-                  }
-                  placeholder="選手名"
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                />
-                <select
-                  value={playerForm.grade}
-                  onChange={(event) =>
-                    setPlayerForm((current) => ({ ...current, grade: event.target.value }))
-                  }
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                >
-                  <option value="">学年を選択</option>
-                  {gradeOptions.map((grade) => (
-                    <option key={grade} value={grade}>
-                      {grade}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={playerForm.guardianId}
-                  onChange={(event) =>
-                    setPlayerForm((current) => ({
-                      ...current,
-                      guardianId: event.target.value
-                    }))
-                  }
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                >
-                  <option value="">保護者を選択</option>
-                  {guardians.map((guardian) => (
-                    <option key={guardian.id} value={guardian.id}>
-                      {guardian.name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  value={playerForm.familyGroup}
-                  onChange={(event) =>
-                    setPlayerForm((current) => ({
-                      ...current,
-                      familyGroup: event.target.value
-                    }))
-                  }
-                  placeholder="兄弟グループIDまたは兄弟グループ名"
-                  className="rounded-md border border-slate-200 px-4 py-3"
-                />
-                <button className="rounded-md bg-field px-4 py-4 font-bold text-white">
-                  {playerForm.id ? "選手を更新" : "選手を追加"}
+            <div className="rounded-lg bg-white p-4 shadow-soft">
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button type="button" onClick={addPlayerDraft} className={primaryButtonClass}>
+                  選手を追加
+                </button>
+                <button type="button" onClick={saveAllPlayerDrafts} className={secondaryButtonClass}>
+                  すべて保存
                 </button>
               </div>
-            </form>
-
-            <div className="space-y-3">
-              {players.length === 0 && (
-                <EmptyState
-                  title="選手がまだ登録されていません。"
-                  body="選手を追加すると、出欠入力と配車表の割り当て対象になります。"
-                />
-              )}
-              {players.map((player) => {
-                const guardian = getGuardian(guardians, player.guardian_id);
-
-                return (
-                  <article key={player.id} className="rounded-lg bg-white p-4 shadow-soft">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-lg font-black">
-                          {player.name} {normalizeGrade(player.grade)}
-                        </h3>
-                        <p className="mt-1 text-sm text-slate-600">
-                          保護者: {guardian?.name ?? "未設定"}
-                        </p>
-                        <p className="mt-1 text-sm text-slate-500">
-                          兄弟グループ: {player.family_group || "未設定"}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-4 grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => startEditPlayer(player)}
-                        className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
-                      >
-                        編集
-                      </button>
-                      <button
-                        onClick={() => deletePlayer(player.id)}
-                        className="rounded-md border border-rose-100 bg-white px-3 py-3 font-bold text-rose-700"
-                      >
-                        削除
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
+              <div className="overflow-x-auto">
+                <table className="min-w-[920px] border-collapse text-night">
+                  <thead>
+                    <tr>
+                      <th className={tableHeaderClass}>選手氏名</th>
+                      <th className={tableHeaderClass}>学年</th>
+                      <th className={tableHeaderClass}>保護者</th>
+                      <th className={tableHeaderClass}>兄弟グループ</th>
+                      <th className={tableHeaderClass}>保存</th>
+                      <th className={tableHeaderClass}>削除</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {playerDrafts.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="border border-slate-200 bg-white px-3 py-5 text-center text-sm font-bold text-slate-600">
+                          選手がまだ登録されていません。
+                        </td>
+                      </tr>
+                    )}
+                    {playerDrafts.map((draft) => (
+                      <tr key={draft.localId}>
+                        <td className={tableCellClass}>
+                          <input
+                            value={draft.name}
+                            onChange={(event) => updatePlayerDraft(draft.localId, { name: event.target.value })}
+                            className={tableInputClass}
+                            placeholder="選手氏名"
+                          />
+                        </td>
+                        <td className={tableCellClass}>
+                          <select
+                            value={normalizeGrade(draft.grade)}
+                            onChange={(event) => updatePlayerDraft(draft.localId, { grade: event.target.value })}
+                            className={tableSelectClass}
+                          >
+                            {gradeOptions.map((grade) => (
+                              <option key={grade} value={grade}>
+                                {grade}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className={tableCellClass}>
+                          <select
+                            value={draft.guardianId}
+                            onChange={(event) => updatePlayerDraft(draft.localId, { guardianId: event.target.value })}
+                            className={`${tableSelectClass} min-w-44`}
+                          >
+                            <option value="">保護者を選択</option>
+                            {guardians.map((guardian) => (
+                              <option key={guardian.id} value={guardian.id}>
+                                {guardian.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className={tableCellClass}>
+                          <input
+                            value={draft.familyGroup}
+                            onChange={(event) => updatePlayerDraft(draft.localId, { familyGroup: event.target.value })}
+                            className={tableInputClass}
+                            placeholder="兄弟グループ"
+                          />
+                        </td>
+                        <td className={tableCellClass}>
+                          <button type="button" onClick={() => savePlayerDraft(draft)} className={primaryButtonClass}>
+                            保存
+                          </button>
+                        </td>
+                        <td className={tableCellClass}>
+                          <button type="button" onClick={() => deletePlayerDraft(draft)} className={dangerButtonClass}>
+                            削除
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -1908,7 +2059,7 @@ export default function Home() {
                 <select
                   value={selectedEventId ?? ""}
                   onChange={(event) => setSelectedEventId(event.target.value || null)}
-                  className="w-full rounded-md border border-slate-200 px-4 py-3"
+                  className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
                 >
                   {events.map((event) => (
                     <option key={event.id} value={event.id}>
@@ -1967,7 +2118,7 @@ export default function Home() {
                           <select
                             name="status"
                             defaultValue={row?.status ?? "未回答"}
-                            className="rounded-md border border-slate-200 px-4 py-3"
+                            className={formFieldClass}
                           >
                             {attendanceStatuses.map((status) => (
                               <option key={status} value={status}>
@@ -1982,7 +2133,7 @@ export default function Home() {
                           <select
                             name="guardian_status"
                             defaultValue={row?.guardian_status ?? "未回答"}
-                            className="rounded-md border border-slate-200 px-4 py-3"
+                            className={formFieldClass}
                           >
                             {attendanceStatuses.map((status) => (
                               <option key={status} value={status}>
@@ -1992,7 +2143,7 @@ export default function Home() {
                           </select>
                         </label>
 
-                        <label className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-3 font-bold">
+                        <label className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-3 font-bold text-night">
                           車出し可
                           <input
                             name="guardian_can_drive"
@@ -2010,22 +2161,22 @@ export default function Home() {
                           min="1"
                           defaultValue={row?.car_capacity ?? guardian?.car_capacity_default ?? 4}
                           placeholder="乗車可能人数"
-                          className="rounded-md border border-slate-200 px-4 py-3"
+                          className={formFieldClass}
                         />
                         <input
                           name="driver_name"
                           defaultValue={row?.driver_name ?? guardian?.name ?? ""}
                           placeholder="運転者名"
-                          className="rounded-md border border-slate-200 px-4 py-3"
+                          className={formFieldClass}
                         />
                         <textarea
                           name="note"
                           defaultValue={row?.note ?? ""}
                           rows={2}
                           placeholder="備考"
-                          className="rounded-md border border-slate-200 px-4 py-3"
+                          className={formFieldClass}
                         />
-                        <button className="rounded-md bg-field px-4 py-4 font-bold text-white">
+                        <button className="rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900">
                           回答を保存
                         </button>
                       </div>
@@ -2064,14 +2215,14 @@ export default function Home() {
               <button
                 onClick={createRidePlanFromResponses}
                 disabled={isAllocationConfirmed}
-                className="mt-4 w-full rounded-md bg-field px-4 py-4 font-bold text-white disabled:bg-slate-300"
+                className="mt-4 w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600"
               >
                 回答から配車表を作成
               </button>
               {isAllocationConfirmed ? (
                 <button
                   onClick={reopenRidePlanForEdit}
-                  className="mt-2 w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+                  className="mt-2 w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
                 >
                   配車完了後に修正する
                 </button>
@@ -2079,7 +2230,7 @@ export default function Home() {
                 <button
                   onClick={completeRidePlan}
                   disabled={eventAllocations.length === 0}
-                  className="mt-2 w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold disabled:text-slate-300"
+                  className="mt-2 w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-600"
                 >
                   配車確定
                 </button>
@@ -2095,7 +2246,7 @@ export default function Home() {
                     setCarForm((current) => ({ ...current, driverName: event.target.value }))
                   }
                   placeholder="運転者名"
-                  className="rounded-md border border-slate-200 px-4 py-3"
+                  className={formFieldClass}
                 />
                 <input
                   value={carForm.carName}
@@ -2103,7 +2254,7 @@ export default function Home() {
                     setCarForm((current) => ({ ...current, carName: event.target.value }))
                   }
                   placeholder="車両名"
-                  className="rounded-md border border-slate-200 px-4 py-3"
+                  className={formFieldClass}
                 />
                 <input
                   value={carForm.capacity}
@@ -2112,11 +2263,11 @@ export default function Home() {
                   }
                   type="number"
                   min="1"
-                  className="rounded-md border border-slate-200 px-4 py-3"
+                  className={formFieldClass}
                 />
                 <button
                   disabled={isAllocationConfirmed}
-                  className="rounded-md bg-night px-4 py-4 font-bold text-white disabled:bg-slate-300"
+                  className="rounded-md bg-night px-4 py-4 font-bold text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-night/30 active:bg-black disabled:bg-slate-200 disabled:text-slate-600"
                 >
                   車両追加
                 </button>
@@ -2158,14 +2309,14 @@ export default function Home() {
               <button
                 onClick={autoAssignExistingCars}
                 disabled={eventAllocations.length === 0 || isAllocationConfirmed}
-                className="mt-3 w-full rounded-md bg-field px-4 py-4 font-bold text-white disabled:bg-slate-300"
+                className="mt-3 w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600"
               >
                 既存車両で自動配車
               </button>
               <button
                 onClick={copyRidePlanText}
                 disabled={eventAllocations.length === 0}
-                className="mt-2 w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold disabled:text-slate-300"
+                className="mt-2 w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-600"
               >
                 配車表LINE文コピー
               </button>
@@ -2197,7 +2348,7 @@ export default function Home() {
                         value={assignedCar?.id ?? ""}
                         onChange={(event) => assignPlayerToCar(player.id, event.target.value)}
                         disabled={row?.status === "欠席" || isAllocationConfirmed}
-                        className="rounded-md border border-slate-200 px-4 py-3 disabled:bg-slate-100"
+                        className="rounded-md border border-slate-200 bg-white px-4 py-3 text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-600"
                       >
                         <option value="">未割当</option>
                         {eventAllocations.map((car) => (
@@ -2349,7 +2500,7 @@ function AdminNavButton({
   return (
     <button
       onClick={onClick}
-      className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-4 text-left"
+      className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-4 text-left text-night hover:bg-white focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-100"
     >
       <span className="block text-base font-black text-night">{title}</span>
       <span className="mt-1 block text-sm leading-5 text-slate-600">{body}</span>
@@ -2435,7 +2586,7 @@ function AllocationResult({
               <button
                 disabled={locked}
                 onClick={() => onDelete(car.id)}
-                className="rounded-md border border-rose-100 bg-white px-3 py-2 text-sm font-bold text-rose-700 disabled:text-slate-300"
+                className="rounded-md border border-rose-200 bg-white px-3 py-2 text-sm font-bold text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-200 active:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-600"
               >
                 削除
               </button>
@@ -2453,7 +2604,7 @@ function AllocationResult({
               return (
                 <span
                   key={playerId}
-                  className="rounded-md bg-slate-100 px-3 py-2 text-sm font-bold"
+                  className="rounded-md bg-slate-100 px-3 py-2 text-sm font-bold text-night"
                 >
                   {player?.name ?? "不明"}
                 </span>
@@ -2500,8 +2651,10 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`rounded-md px-2 py-3 text-sm font-bold ${
-        active ? "bg-night text-white" : "bg-slate-100 text-slate-600"
+      className={`rounded-md border px-2 py-3 text-sm font-black focus:outline-none focus:ring-2 focus:ring-field/30 ${
+        active
+          ? "border-night bg-night text-white"
+          : "border-slate-200 bg-white text-night hover:bg-slate-100 active:bg-slate-200"
       }`}
     >
       {children}
