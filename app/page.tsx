@@ -37,6 +37,24 @@ const statusStyles: Record<AttendanceStatus, string> = {
 };
 
 const attendanceStatuses: AttendanceStatus[] = ["参加", "欠席", "遅刻", "未回答"];
+const gradeOptions = [
+  "年少",
+  "年中",
+  "年長",
+  "小1",
+  "小2",
+  "小3",
+  "小4",
+  "小5",
+  "小6",
+  "中1",
+  "中2",
+  "中3",
+  "高1",
+  "高2",
+  "高3"
+] as const;
+const defaultGrade = "小1";
 
 const initialEventForm = {
   title: "",
@@ -50,6 +68,7 @@ const initialGuardianForm = {
   name: "",
   email: "",
   phone: "",
+  note: "",
   canDrive: false,
   capacity: "4"
 };
@@ -102,6 +121,21 @@ function getGuardian(guardians: GuardianRow[], guardianId: string | null) {
   return guardians.find((guardian) => guardian.id === guardianId);
 }
 
+function normalizeGrade(value: string | number | null | undefined) {
+  const raw = String(value ?? "").trim();
+  if ((gradeOptions as readonly string[]).includes(raw)) return raw;
+  if (/^[1-6]$/.test(raw)) return `小${raw}`;
+  if (/^[7-9]$/.test(raw)) return `中${Number(raw) - 6}`;
+  if (/^1[0-2]$/.test(raw)) return `高${Number(raw) - 9}`;
+  return raw || defaultGrade;
+}
+
+function gradeRank(value: string | number | null | undefined) {
+  const normalized = normalizeGrade(value);
+  const index = (gradeOptions as readonly string[]).indexOf(normalized);
+  return index >= 0 ? index : -1;
+}
+
 function isParentDriver(car: AllocationRow, player: PlayerRow) {
   return (
     car.driver_name.includes(player.name) ||
@@ -129,7 +163,7 @@ function findBestCarIndex(
   players: PlayerRow[],
   options: AutoAssignOptions
 ) {
-  const groupGrades = new Set(group.map((player) => player.grade));
+  const groupGrades = new Set(group.map((player) => normalizeGrade(player.grade)));
 
   const scored = cars
     .map((car, index) => {
@@ -145,7 +179,7 @@ function findBestCarIndex(
         options.preferSameGrade &&
         car.player_ids.some((playerId) => {
           const player = getPlayer(players, playerId);
-          return player ? groupGrades.has(player.grade) : false;
+          return player ? groupGrades.has(normalizeGrade(player.grade)) : false;
         })
           ? 20
           : 0;
@@ -167,7 +201,7 @@ function createAutoAssignedCars(
 ) {
   const emptyCars = baseCars.map((car) => ({ ...car, player_ids: [] as string[] }));
   const sortedPlayers = [...targetPlayers].sort(
-    (a, b) => b.grade - a.grade || a.name.localeCompare(b.name, "ja")
+    (a, b) => gradeRank(b.grade) - gradeRank(a.grade) || a.name.localeCompare(b.name, "ja")
   );
   const groups = splitIntoGroups(sortedPlayers, options);
   const remainingGroups: PlayerRow[][] = [];
@@ -201,6 +235,7 @@ function createAutoAssignedCars(
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("landing");
+  const [screenHistory, setScreenHistory] = useState<Screen[]>([]);
   const [adminEmail, setAdminEmail] = useState(defaultAdminEmail);
   const [password, setPassword] = useState("");
   const [loginErrorEmail, setLoginErrorEmail] = useState("");
@@ -280,6 +315,27 @@ export default function Home() {
     (player) => !assignedPlayerIds.has(player.id)
   );
 
+  function navigateTo(nextScreen: Screen) {
+    setScreen((current) => {
+      if (current === nextScreen) return current;
+      setScreenHistory((history) => [...history, current]);
+      return nextScreen;
+    });
+  }
+
+  function goBack() {
+    setScreenHistory((history) => {
+      const previous = history[history.length - 1];
+      setScreen(previous ?? "landing");
+      return history.slice(0, -1);
+    });
+  }
+
+  function goHome() {
+    setScreenHistory([]);
+    setScreen("landing");
+  }
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const eventId = params.get("event");
@@ -356,7 +412,9 @@ export default function Home() {
     if (allocationsResult.error) setMessage(`配車データの取得に失敗しました: ${allocationsResult.error.message}`);
     const loadedEvents = (eventsResult.data ?? []) as EventRow[];
     const loadedGuardians = (guardiansResult.data ?? []) as GuardianRow[];
-    const loadedPlayers = (playersResult.data ?? []) as PlayerRow[];
+    const loadedPlayers = ((playersResult.data ?? []) as PlayerRow[]).sort(
+      (a, b) => gradeRank(b.grade) - gradeRank(a.grade) || a.name.localeCompare(b.name, "ja")
+    );
     const loadedAttendance = (attendanceResult.data ?? []) as AttendanceRow[];
     const loadedAllocations = (allocationsResult.data ?? []) as AllocationRow[];
     setEvents(loadedEvents);
@@ -412,6 +470,7 @@ export default function Home() {
 
     setAdminEmail(submittedEmail);
     setIsAdmin(true);
+    setScreenHistory(["landing"]);
     setScreen("home");
     await loadSessionAndData();
   }
@@ -419,6 +478,7 @@ export default function Home() {
   async function handleLogout() {
     await supabase?.auth.signOut();
     setIsAdmin(false);
+    setScreenHistory([]);
     setScreen("landing");
   }
 
@@ -476,7 +536,7 @@ export default function Home() {
       startsAt: toDatetimeLocalValue(eventToEdit.starts_at),
       place: eventToEdit.place
     });
-    setScreen("events");
+    navigateTo("events");
   }
 
   function resetEventForm() {
@@ -504,7 +564,7 @@ export default function Home() {
       !nextEventId &&
       (screen === "parent" || screen === "carpool" || screen === "summary" || screen === "responses")
     ) {
-      setScreen("events");
+      navigateTo("events");
     }
     setMessage("遠征を削除しました。");
     await loadSessionAndData(nextEventId);
@@ -522,6 +582,7 @@ export default function Home() {
       name: guardianForm.name.trim(),
       email: guardianForm.email.trim(),
       phone: guardianForm.phone.trim() || null,
+      note: guardianForm.note.trim() || null,
       can_drive_default: guardianForm.canDrive,
       car_capacity_default: Math.max(Number(guardianForm.capacity) || 1, 1)
     };
@@ -546,10 +607,11 @@ export default function Home() {
       name: guardian.name,
       email: guardian.email,
       phone: guardian.phone ?? "",
+      note: guardian.note ?? "",
       canDrive: guardian.can_drive_default,
       capacity: String(guardian.car_capacity_default)
     });
-    setScreen("guardians");
+    navigateTo("guardians");
   }
 
   async function deleteGuardian(guardianId: string) {
@@ -589,7 +651,7 @@ export default function Home() {
     );
     const payload = {
       name: playerForm.name.trim(),
-      grade: Math.max(Number(playerForm.grade) || 0, 0),
+      grade: normalizeGrade(playerForm.grade),
       guardian_id: playerForm.guardianId || null,
       family_group: playerForm.familyGroup.trim() || playerForm.name.trim(),
       parent_name: selectedGuardianForPlayer?.name ?? ""
@@ -613,11 +675,11 @@ export default function Home() {
     setPlayerForm({
       id: player.id,
       name: player.name,
-      grade: String(player.grade),
+      grade: normalizeGrade(player.grade),
       guardianId: player.guardian_id ?? "",
       familyGroup: player.family_group
     });
-    setScreen("players");
+    navigateTo("players");
   }
 
   async function deletePlayer(playerId: string) {
@@ -953,12 +1015,12 @@ export default function Home() {
               onClick={() => {
                 setMessage("");
                 if (!selectedEventId && events[0]) setSelectedEventId(events[0].id);
-                setScreen("parent");
+                navigateTo("parent");
               }}
-              className="rounded-lg bg-field px-5 py-7 text-left text-white shadow-soft"
+              className="rounded-lg border border-emerald-200 bg-white px-5 py-7 text-left text-night shadow-soft"
             >
               <span className="block text-2xl font-black">保護者用</span>
-              <span className="mt-2 block text-sm font-bold opacity-90">
+              <span className="mt-2 block text-sm font-bold text-slate-600">
                 遠征を選んで、家庭の出欠・車出しを入力
               </span>
             </button>
@@ -966,9 +1028,9 @@ export default function Home() {
               type="button"
               onClick={() => {
                 setMessage("");
-                setScreen(isAdmin ? "home" : "adminLogin");
+                navigateTo(isAdmin ? "home" : "adminLogin");
               }}
-              className="rounded-lg bg-night px-5 py-7 text-left text-white shadow-soft"
+              className="rounded-lg border border-night bg-night px-5 py-7 text-left text-white shadow-soft"
             >
               <span className="block text-2xl font-black">管理者用</span>
               <span className="mt-2 block text-sm font-bold opacity-90">
@@ -1027,13 +1089,22 @@ export default function Home() {
               {loading ? "ログイン中..." : "管理者としてログイン"}
             </button>
           </form>
-          <button
-            type="button"
-            onClick={() => setScreen("landing")}
-            className="mt-3 w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
-          >
-            最初の画面へ戻る
-          </button>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={goBack}
+              className="rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+            >
+              戻る
+            </button>
+            <button
+              type="button"
+              onClick={goHome}
+              className="rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+            >
+              ホームに戻る
+            </button>
+          </div>
           {message && <p className="mt-4 text-sm font-bold text-rose-700">{message}</p>}
         </section>
       </main>
@@ -1141,7 +1212,7 @@ export default function Home() {
                               className="rounded-md border border-slate-100 bg-slate-50 p-3"
                             >
                               <p className="mb-2 font-black">
-                                {player.name} {player.grade}年
+                                {player.name} {normalizeGrade(player.grade)}
                               </p>
                               <div className="grid grid-cols-2 gap-2">
                                 {attendanceStatuses.map((status) => (
@@ -1295,24 +1366,28 @@ export default function Home() {
           )}
 
           {message && <p className="text-sm font-bold text-field">{message}</p>}
-          {!isParentLinkMode && (
-            <div className="grid gap-2">
+          <div className="grid gap-2">
+            <button
+              onClick={goBack}
+              className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+            >
+              戻る
+            </button>
+            <button
+              onClick={goHome}
+              className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+            >
+              ホームに戻る
+            </button>
+            {isAdmin && !isParentLinkMode && (
               <button
-                onClick={() => setScreen("landing")}
-                className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 font-bold"
+                onClick={() => navigateTo("home")}
+                className="w-full rounded-md bg-night px-4 py-3 font-bold text-white"
               >
-                最初の画面へ戻る
+                管理者メニューへ戻る
               </button>
-              {isAdmin && (
-                <button
-                  onClick={() => setScreen("home")}
-                  className="w-full rounded-md bg-night px-4 py-3 font-bold text-white"
-                >
-                  管理者メニューへ戻る
-                </button>
-              )}
-            </div>
-          )}
+            )}
+          </div>
         </section>
       </main>
     );
@@ -1321,17 +1396,31 @@ export default function Home() {
   return (
     <main className="min-h-[100dvh] bg-chalk pb-28" style={appBackgroundStyle}>
       <header className="sticky top-0 z-20 border-b border-black/5 bg-chalk/95 px-4 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-3xl items-center justify-between">
+        <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs font-bold text-clay">{adminEmail}</p>
             <h1 className="text-lg font-black">遠征配車管理</h1>
           </div>
-          <button
-            onClick={handleLogout}
-            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
-          >
-            ログアウト
-          </button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <button
+              onClick={goBack}
+              className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
+            >
+              戻る
+            </button>
+            <button
+              onClick={goHome}
+              className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
+            >
+              ホームに戻る
+            </button>
+            <button
+              onClick={handleLogout}
+              className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
+            >
+              ログアウト
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1355,27 +1444,27 @@ export default function Home() {
                 <AdminNavButton
                   title="遠征管理"
                   body="遠征・試合・練習の作成、編集、削除"
-                  onClick={() => setScreen("events")}
+                  onClick={() => navigateTo("events")}
                 />
                 <AdminNavButton
                   title="保護者管理"
                   body="保護者情報と車出し初期設定の管理"
-                  onClick={() => setScreen("guardians")}
+                  onClick={() => navigateTo("guardians")}
                 />
                 <AdminNavButton
                   title="選手管理"
                   body="選手、学年、保護者、兄弟グループの管理"
-                  onClick={() => setScreen("players")}
+                  onClick={() => navigateTo("players")}
                 />
                 <AdminNavButton
                   title="出欠・車出し回答管理"
                   body="保護者が入力した出欠、車出し、運転者、備考を確認・編集"
-                  onClick={() => setScreen("responses")}
+                  onClick={() => navigateTo("responses")}
                 />
                 <AdminNavButton
                   title="配車管理"
                   body="出欠回答から自動配車し、確定結果を保存"
-                  onClick={() => setScreen("carpool")}
+                  onClick={() => navigateTo("carpool")}
                 />
               </div>
             </section>
@@ -1465,7 +1554,7 @@ export default function Home() {
                   <button
                     onClick={() => {
                       setSelectedEventId(event.id);
-                      setScreen("parent");
+                      navigateTo("parent");
                     }}
                     className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
                   >
@@ -1474,7 +1563,7 @@ export default function Home() {
                   <button
                     onClick={() => {
                       setSelectedEventId(event.id);
-                      setScreen("carpool");
+                      navigateTo("carpool");
                     }}
                     className="rounded-md bg-field px-3 py-3 font-bold text-white"
                   >
@@ -1483,7 +1572,7 @@ export default function Home() {
                   <button
                     onClick={() => {
                       setSelectedEventId(event.id);
-                      setScreen("summary");
+                      navigateTo("summary");
                     }}
                     className="rounded-md border border-slate-200 bg-white px-3 py-3 font-bold"
                   >
@@ -1564,6 +1653,15 @@ export default function Home() {
                   placeholder="電話番号"
                   className="rounded-md border border-slate-200 px-4 py-3"
                 />
+                <textarea
+                  value={guardianForm.note}
+                  onChange={(event) =>
+                    setGuardianForm((current) => ({ ...current, note: event.target.value }))
+                  }
+                  placeholder="備考"
+                  rows={3}
+                  className="rounded-md border border-slate-200 px-4 py-3"
+                />
                 <label className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-3 font-bold">
                   車出し初期可否
                   <input
@@ -1602,9 +1700,9 @@ export default function Home() {
                 />
               )}
               {guardians.map((guardian) => {
-                const linkedPlayerCount = players.filter(
+                const linkedPlayers = players.filter(
                   (player) => player.guardian_id === guardian.id
-                ).length;
+                );
 
                 return (
                   <article key={guardian.id} className="rounded-lg bg-white p-4 shadow-soft">
@@ -1613,14 +1711,35 @@ export default function Home() {
                         <h3 className="text-lg font-black">{guardian.name}</h3>
                         <p className="mt-1 text-sm text-slate-600">{guardian.email}</p>
                         <p className="mt-1 text-sm text-slate-500">
-                          {guardian.phone || "電話番号未登録"} / 選手 {linkedPlayerCount}名
+                          {guardian.phone || "電話番号未登録"} / 選手 {linkedPlayers.length}名
                         </p>
+                        {guardian.note && (
+                          <p className="mt-2 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                            {guardian.note}
+                          </p>
+                        )}
                       </div>
                       <span className="rounded-md bg-slate-100 px-3 py-1 text-sm font-bold">
                         {guardian.can_drive_default
                           ? `${guardian.car_capacity_default}名`
                           : "車出しなし"}
                       </span>
+                    </div>
+                    <div className="mt-4 rounded-md bg-slate-50 p-3">
+                      <p className="text-sm font-black text-slate-700">紐づく選手</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {linkedPlayers.length === 0 && (
+                          <span className="text-sm font-bold text-slate-400">未設定</span>
+                        )}
+                        {linkedPlayers.map((player) => (
+                          <span
+                            key={player.id}
+                            className="rounded-md bg-white px-3 py-2 text-sm font-bold"
+                          >
+                            {player.name} {normalizeGrade(player.grade)}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                     <div className="mt-4 grid grid-cols-2 gap-2">
                       <button
@@ -1674,16 +1793,20 @@ export default function Home() {
                   placeholder="選手名"
                   className="rounded-md border border-slate-200 px-4 py-3"
                 />
-                <input
+                <select
                   value={playerForm.grade}
                   onChange={(event) =>
                     setPlayerForm((current) => ({ ...current, grade: event.target.value }))
                   }
-                  type="number"
-                  min="0"
-                  placeholder="学年"
                   className="rounded-md border border-slate-200 px-4 py-3"
-                />
+                >
+                  <option value="">学年を選択</option>
+                  {gradeOptions.map((grade) => (
+                    <option key={grade} value={grade}>
+                      {grade}
+                    </option>
+                  ))}
+                </select>
                 <select
                   value={playerForm.guardianId}
                   onChange={(event) =>
@@ -1733,7 +1856,7 @@ export default function Home() {
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <h3 className="text-lg font-black">
-                          {player.name} {player.grade}年
+                          {player.name} {normalizeGrade(player.grade)}
                         </h3>
                         <p className="mt-1 text-sm text-slate-600">
                           保護者: {guardian?.name ?? "未設定"}
@@ -1818,7 +1941,7 @@ export default function Home() {
                       <div className="mb-3 flex items-start justify-between gap-3">
                         <div>
                           <h3 className="text-lg font-black">
-                            {player.name} {player.grade}年
+                            {player.name} {normalizeGrade(player.grade)}
                           </h3>
                           <p className="mt-1 text-sm text-slate-600">
                             保護者: {guardian?.name ?? "未設定"}
@@ -2060,7 +2183,7 @@ export default function Home() {
                     <div key={player.id} className="grid gap-2 border-b border-slate-100 pb-3">
                       <div className="flex items-center justify-between">
                         <span className="font-bold">
-                          {player.name} {player.grade}年
+                          {player.name} {normalizeGrade(player.grade)}
                         </span>
                         <span
                           className={`rounded-md border px-3 py-1 text-sm font-bold ${
@@ -2125,19 +2248,19 @@ export default function Home() {
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-black/5 bg-white px-3 pb-3 pt-3">
         <div className="mx-auto grid max-w-3xl grid-cols-5 gap-2">
-          <TabButton active={screen === "home"} onClick={() => setScreen("home")}>
+          <TabButton active={screen === "home"} onClick={() => navigateTo("home")}>
             ホーム
           </TabButton>
-          <TabButton active={screen === "events"} onClick={() => setScreen("events")}>
+          <TabButton active={screen === "events"} onClick={() => navigateTo("events")}>
             遠征
           </TabButton>
-          <TabButton active={screen === "responses"} onClick={() => setScreen("responses")}>
+          <TabButton active={screen === "responses"} onClick={() => navigateTo("responses")}>
             回答
           </TabButton>
-          <TabButton active={screen === "carpool"} onClick={() => setScreen("carpool")}>
+          <TabButton active={screen === "carpool"} onClick={() => navigateTo("carpool")}>
             配車
           </TabButton>
-          <TabButton active={screen === "summary"} onClick={() => setScreen("summary")}>
+          <TabButton active={screen === "summary"} onClick={() => navigateTo("summary")}>
             集計
           </TabButton>
         </div>

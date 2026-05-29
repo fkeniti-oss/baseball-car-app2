@@ -20,6 +20,7 @@ export type GuardianRow = {
   name: string;
   email: string;
   phone: string | null;
+  note: string | null;
   can_drive_default: boolean;
   car_capacity_default: number;
   created_at: string;
@@ -30,7 +31,7 @@ export type PlayerRow = {
   id: string;
   guardian_id: string | null;
   name: string;
-  grade: number;
+  grade: string;
   family_group: string;
   parent_name: string;
   created_at: string;
