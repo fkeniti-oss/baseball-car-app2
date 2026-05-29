@@ -44,6 +44,7 @@ create table if not exists public.attendance (
   player_id uuid not null references public.players(id) on delete cascade,
   guardian_id uuid references public.guardians(id) on delete set null,
   status text not null default '未回答' check (status in ('参加', '欠席', '遅刻', '未回答')),
+  guardian_status text not null default '未回答' check (guardian_status in ('参加', '欠席', '遅刻', '未回答')),
   guardian_can_drive boolean not null default false,
   driver_name text,
   car_capacity integer not null default 4 check (car_capacity > 0),
@@ -53,6 +54,23 @@ create table if not exists public.attendance (
   updated_at timestamptz not null default now(),
   unique (event_id, player_id)
 );
+
+alter table public.attendance
+add column if not exists guardian_status text not null default '未回答';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'attendance_guardian_status_check'
+  ) then
+    alter table public.attendance
+    add constraint attendance_guardian_status_check
+    check (guardian_status in ('参加', '欠席', '遅刻', '未回答'));
+  end if;
+end;
+$$;
 
 create table if not exists public.allocations (
   id uuid primary key default gen_random_uuid(),

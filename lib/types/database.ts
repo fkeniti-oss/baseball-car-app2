@@ -43,6 +43,7 @@ export type AttendanceRow = {
   player_id: string;
   guardian_id: string | null;
   status: AttendanceStatus;
+  guardian_status: AttendanceStatus;
   guardian_can_drive: boolean;
   driver_name: string | null;
   car_capacity: number;
