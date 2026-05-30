@@ -1,16 +1,11 @@
--- 少年野球遠征配車アプリ Supabase schema
--- Supabase SQL Editorでこのファイル全体を実行してください。
-
-create extension if not exists pgcrypto;
-
 create table if not exists public.events (
   id uuid primary key default gen_random_uuid(),
   title text not null,
-  event_type text not null check (event_type in ('練習', '試合', '遠征')),
-  starts_at timestamptz not null,
+  event_type text not null default '遠征',
+  starts_at timestamptz not null default now(),
   place text not null default '',
   share_note text,
-  allocation_status text not null default 'draft' check (allocation_status in ('draft', 'confirmed')),
+  allocation_status text not null default 'draft',
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -19,11 +14,11 @@ create table if not exists public.events (
 create table if not exists public.guardians (
   id uuid primary key default gen_random_uuid(),
   name text not null,
-  email text unique,
+  email text,
   phone text,
   note text,
   can_drive_default boolean not null default false,
-  car_capacity_default integer not null default 4 check (car_capacity_default > 0),
+  car_capacity_default integer not null default 4,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -46,9 +41,7 @@ create table if not exists public.player_guardians (
   relationship_label text,
   display_order integer not null check (display_order in (1, 2)),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (player_id, guardian_id),
-  unique (player_id, display_order)
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists public.player_sibling_links (
@@ -56,141 +49,46 @@ create table if not exists public.player_sibling_links (
   player_id uuid not null references public.players(id) on delete cascade,
   sibling_player_id uuid not null references public.players(id) on delete cascade,
   created_at timestamptz not null default now(),
-  check (player_id <> sibling_player_id),
-  unique (player_id, sibling_player_id)
+  check (player_id <> sibling_player_id)
 );
-
-alter table public.guardians
-add column if not exists note text;
-
-alter table public.guardians
-alter column email drop not null;
-
-alter table public.players
-alter column grade drop default;
-
-alter table public.players
-alter column grade type text
-using (
-  case
-    when grade::text in ('1', '2', '3', '4', '5', '6') then '小' || grade::text
-    when grade::text in ('7', '8', '9') then '中' || (grade::integer - 6)::text
-    when grade::text in ('10', '11', '12') then '高' || (grade::integer - 9)::text
-    when grade::text in ('年少', '年中', '年長', '小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3') then grade::text
-    else '小1'
-  end
-);
-
-alter table public.players
-alter column grade set default '小1';
-
-insert into public.player_guardians (player_id, guardian_id, relationship_label, display_order)
-select id, guardian_id, '保護者1', 1
-from public.players
-where guardian_id is not null
-on conflict (player_id, display_order) do nothing;
-
-insert into public.player_sibling_links (player_id, sibling_player_id)
-select player_id, sibling_player_id
-from (
-  select
-    p1.id as player_id,
-    p2.id as sibling_player_id,
-    row_number() over (partition by p1.id order by p2.name, p2.id) as sibling_order
-  from public.players p1
-  join public.players p2
-    on p1.id <> p2.id
-   and coalesce(nullif(p1.family_group, ''), p1.name) = coalesce(nullif(p2.family_group, ''), p2.name)
-  where coalesce(nullif(p1.family_group, ''), p1.name) <> p1.name
-) grouped_siblings
-where sibling_order <= 3
-on conflict (player_id, sibling_player_id) do nothing;
 
 create table if not exists public.attendance (
   id uuid primary key default gen_random_uuid(),
   event_id uuid not null references public.events(id) on delete cascade,
   player_id uuid not null references public.players(id) on delete cascade,
   guardian_id uuid references public.guardians(id) on delete set null,
-  status text not null default '未回答' check (status in ('参加', '欠席', '遅刻', '未回答')),
-  guardian_status text not null default '未回答' check (guardian_status in ('参加', '欠席', '遅刻', '未回答')),
+  status text not null default '未回答',
+  guardian_status text not null default '未回答',
   guardian_can_drive boolean not null default false,
   driver_name text,
-  car_capacity integer not null default 4 check (car_capacity > 0),
+  car_capacity integer not null default 4,
   note text,
   submitted_at timestamptz,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (event_id, player_id)
+  updated_at timestamptz not null default now()
 );
-
-alter table public.attendance
-add column if not exists guardian_status text not null default '未回答';
-
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'attendance_guardian_status_check'
-  ) then
-    alter table public.attendance
-    add constraint attendance_guardian_status_check
-    check (guardian_status in ('参加', '欠席', '遅刻', '未回答'));
-  end if;
-end;
-$$;
 
 create table if not exists public.allocations (
   id uuid primary key default gen_random_uuid(),
   event_id uuid not null references public.events(id) on delete cascade,
   guardian_id uuid references public.guardians(id) on delete set null,
-  driver_name text not null,
-  car_name text not null,
-  capacity integer not null check (capacity > 0),
+  driver_name text not null default '',
+  car_name text not null default '',
+  capacity integer not null default 4,
   player_ids uuid[] not null default '{}',
   staff_ids uuid[] not null default '{}',
   passenger_guardian_ids uuid[] not null default '{}',
-  vehicle_type text not null default 'regular' check (vehicle_type in ('regular', 'staff', 'cargo')),
+  vehicle_type text not null default 'regular',
   cargo_note text,
   sort_order integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
-alter table public.allocations
-add column if not exists staff_ids uuid[] not null default '{}';
-
-alter table public.allocations
-add column if not exists passenger_guardian_ids uuid[] not null default '{}';
-
-alter table public.allocations
-add column if not exists vehicle_type text not null default 'regular';
-
-alter table public.allocations
-add column if not exists cargo_note text;
-
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'allocations_vehicle_type_check'
-  ) then
-    alter table public.allocations
-    add constraint allocations_vehicle_type_check
-    check (vehicle_type in ('regular', 'staff', 'cargo'));
-  end if;
-end;
-$$;
-
-update public.allocations
-set vehicle_type = 'regular'
-where vehicle_type is null;
-
 create table if not exists public.staff (
   id uuid primary key default gen_random_uuid(),
   name text not null,
-  role text not null default 'コーチ' check (role in ('監督', 'コーチ', 'その他スタッフ')),
+  role text not null default 'コーチ',
   phone text,
   note text,
   created_at timestamptz not null default now(),
@@ -201,127 +99,96 @@ create table if not exists public.staff_attendance (
   id uuid primary key default gen_random_uuid(),
   event_id uuid not null references public.events(id) on delete cascade,
   staff_id uuid not null references public.staff(id) on delete cascade,
-  attendance_status text not null default '未回答' check (attendance_status in ('参加', '欠席', '遅刻', '未回答')),
+  attendance_status text not null default '未回答',
   can_drive boolean not null default false,
-  capacity integer not null default 4 check (capacity > 0),
+  capacity integer not null default 4,
   driver_name text,
   note text,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (event_id, staff_id)
+  updated_at timestamptz not null default now()
 );
+
+alter table public.events add column if not exists event_type text not null default '遠征';
+alter table public.events add column if not exists starts_at timestamptz not null default now();
+alter table public.events add column if not exists place text not null default '';
+alter table public.events add column if not exists share_note text;
+alter table public.events add column if not exists allocation_status text not null default 'draft';
+alter table public.events add column if not exists created_by uuid references auth.users(id) on delete set null;
+alter table public.events add column if not exists created_at timestamptz not null default now();
+alter table public.events add column if not exists updated_at timestamptz not null default now();
+
+alter table public.guardians add column if not exists email text;
+alter table public.guardians add column if not exists phone text;
+alter table public.guardians add column if not exists note text;
+alter table public.guardians add column if not exists can_drive_default boolean not null default false;
+alter table public.guardians add column if not exists car_capacity_default integer not null default 4;
+alter table public.guardians add column if not exists created_at timestamptz not null default now();
+alter table public.guardians add column if not exists updated_at timestamptz not null default now();
+
+alter table public.players add column if not exists guardian_id uuid references public.guardians(id) on delete set null;
+alter table public.players add column if not exists grade text not null default '小1';
+alter table public.players add column if not exists family_group text not null default '';
+alter table public.players add column if not exists parent_name text not null default '';
+alter table public.players add column if not exists created_at timestamptz not null default now();
+alter table public.players add column if not exists updated_at timestamptz not null default now();
+
+alter table public.attendance add column if not exists guardian_id uuid references public.guardians(id) on delete set null;
+alter table public.attendance add column if not exists status text not null default '未回答';
+alter table public.attendance add column if not exists guardian_status text not null default '未回答';
+alter table public.attendance add column if not exists guardian_can_drive boolean not null default false;
+alter table public.attendance add column if not exists driver_name text;
+alter table public.attendance add column if not exists car_capacity integer not null default 4;
+alter table public.attendance add column if not exists note text;
+alter table public.attendance add column if not exists submitted_at timestamptz;
+alter table public.attendance add column if not exists created_at timestamptz not null default now();
+alter table public.attendance add column if not exists updated_at timestamptz not null default now();
+
+alter table public.allocations add column if not exists guardian_id uuid references public.guardians(id) on delete set null;
+alter table public.allocations add column if not exists driver_name text not null default '';
+alter table public.allocations add column if not exists car_name text not null default '';
+alter table public.allocations add column if not exists capacity integer not null default 4;
+alter table public.allocations add column if not exists player_ids uuid[] not null default '{}';
+alter table public.allocations add column if not exists staff_ids uuid[] not null default '{}';
+alter table public.allocations add column if not exists passenger_guardian_ids uuid[] not null default '{}';
+alter table public.allocations add column if not exists vehicle_type text not null default 'regular';
+alter table public.allocations add column if not exists cargo_note text;
+alter table public.allocations add column if not exists sort_order integer not null default 0;
+alter table public.allocations add column if not exists created_at timestamptz not null default now();
+alter table public.allocations add column if not exists updated_at timestamptz not null default now();
+
+alter table public.staff add column if not exists role text not null default 'コーチ';
+alter table public.staff add column if not exists phone text;
+alter table public.staff add column if not exists note text;
+alter table public.staff add column if not exists created_at timestamptz not null default now();
+alter table public.staff add column if not exists updated_at timestamptz not null default now();
+
+alter table public.staff_attendance add column if not exists attendance_status text not null default '未回答';
+alter table public.staff_attendance add column if not exists can_drive boolean not null default false;
+alter table public.staff_attendance add column if not exists capacity integer not null default 4;
+alter table public.staff_attendance add column if not exists driver_name text;
+alter table public.staff_attendance add column if not exists note text;
+alter table public.staff_attendance add column if not exists created_at timestamptz not null default now();
+alter table public.staff_attendance add column if not exists updated_at timestamptz not null default now();
 
 create index if not exists player_guardians_player_id_idx on public.player_guardians(player_id);
 create index if not exists player_guardians_guardian_id_idx on public.player_guardians(guardian_id);
 create unique index if not exists player_guardians_player_guardian_unique_idx on public.player_guardians(player_id, guardian_id);
 create unique index if not exists player_guardians_player_display_order_unique_idx on public.player_guardians(player_id, display_order);
+
 create index if not exists player_sibling_links_player_id_idx on public.player_sibling_links(player_id);
 create index if not exists player_sibling_links_sibling_player_id_idx on public.player_sibling_links(sibling_player_id);
 create unique index if not exists player_sibling_links_unique_idx on public.player_sibling_links(player_id, sibling_player_id);
+
 create unique index if not exists attendance_event_player_unique_idx on public.attendance(event_id, player_id);
 create index if not exists attendance_event_id_idx on public.attendance(event_id);
 create index if not exists attendance_guardian_id_idx on public.attendance(guardian_id);
+
 create index if not exists allocations_event_id_idx on public.allocations(event_id);
-create index if not exists staff_attendance_event_id_idx on public.staff_attendance(event_id);
-create index if not exists staff_attendance_staff_id_idx on public.staff_attendance(staff_id);
-create unique index if not exists staff_attendance_event_staff_unique_idx on public.staff_attendance(event_id, staff_id);
 create index if not exists allocations_vehicle_type_idx on public.allocations(vehicle_type);
 
-create or replace function public.enforce_player_guardians_limit()
-returns trigger
-language plpgsql
-as $$
-begin
-  if (
-    select count(*)
-    from public.player_guardians
-    where player_id = new.player_id
-      and id <> coalesce(new.id, '00000000-0000-0000-0000-000000000000'::uuid)
-  ) >= 2 then
-    raise exception '1選手に登録できる保護者は最大2名です。';
-  end if;
-
-  return new;
-end;
-$$;
-
-drop trigger if exists enforce_player_guardians_limit_trigger on public.player_guardians;
-create trigger enforce_player_guardians_limit_trigger
-before insert or update on public.player_guardians
-for each row execute function public.enforce_player_guardians_limit();
-
-create or replace function public.enforce_player_siblings_limit()
-returns trigger
-language plpgsql
-as $$
-begin
-  if (
-    select count(*)
-    from public.player_sibling_links
-    where player_id = new.player_id
-      and id <> coalesce(new.id, '00000000-0000-0000-0000-000000000000'::uuid)
-  ) >= 3 then
-    raise exception '1選手に登録できる兄弟は最大3名です。';
-  end if;
-
-  return new;
-end;
-$$;
-
-drop trigger if exists enforce_player_siblings_limit_trigger on public.player_sibling_links;
-create trigger enforce_player_siblings_limit_trigger
-before insert or update on public.player_sibling_links
-for each row execute function public.enforce_player_siblings_limit();
-
-create or replace function public.touch_updated_at()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
-
-drop trigger if exists touch_events_updated_at on public.events;
-create trigger touch_events_updated_at
-before update on public.events
-for each row execute function public.touch_updated_at();
-
-drop trigger if exists touch_guardians_updated_at on public.guardians;
-create trigger touch_guardians_updated_at
-before update on public.guardians
-for each row execute function public.touch_updated_at();
-
-drop trigger if exists touch_players_updated_at on public.players;
-create trigger touch_players_updated_at
-before update on public.players
-for each row execute function public.touch_updated_at();
-
-drop trigger if exists touch_player_guardians_updated_at on public.player_guardians;
-create trigger touch_player_guardians_updated_at
-before update on public.player_guardians
-for each row execute function public.touch_updated_at();
-
-drop trigger if exists touch_attendance_updated_at on public.attendance;
-create trigger touch_attendance_updated_at
-before update on public.attendance
-for each row execute function public.touch_updated_at();
-
-drop trigger if exists touch_allocations_updated_at on public.allocations;
-create trigger touch_allocations_updated_at
-before update on public.allocations
-for each row execute function public.touch_updated_at();
-
-drop trigger if exists touch_staff_updated_at on public.staff;
-create trigger touch_staff_updated_at
-before update on public.staff
-for each row execute function public.touch_updated_at();
-
-drop trigger if exists touch_staff_attendance_updated_at on public.staff_attendance;
-create trigger touch_staff_attendance_updated_at
-before update on public.staff_attendance
-for each row execute function public.touch_updated_at();
+create unique index if not exists staff_attendance_event_staff_unique_idx on public.staff_attendance(event_id, staff_id);
+create index if not exists staff_attendance_event_id_idx on public.staff_attendance(event_id);
+create index if not exists staff_attendance_staff_id_idx on public.staff_attendance(staff_id);
 
 alter table public.events enable row level security;
 alter table public.guardians enable row level security;
@@ -332,11 +199,6 @@ alter table public.attendance enable row level security;
 alter table public.allocations enable row level security;
 alter table public.staff enable row level security;
 alter table public.staff_attendance enable row level security;
-
--- MVP運用方針:
--- 管理者はSupabase Authログイン済みユーザー。保護者回答URLはanonでも入力可能にしています。
--- 本番で保護者にもAuthを必須化する場合は、anon insert/update policyを削除し、
--- auth.email() = guardians.email の条件に変更してください。
 
 drop policy if exists "authenticated admins can manage events" on public.events;
 create policy "authenticated admins can manage events"
@@ -474,5 +336,3 @@ create policy "public can read staff attendance"
 on public.staff_attendance for select
 to anon, authenticated
 using (true);
-
--- 今回追加実行する差分SQLは supabase/migrations/fix-import-download-delete-save.sql にまとめています。

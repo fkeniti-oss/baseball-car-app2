@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
 import type {
   AllocationRow,
@@ -69,6 +70,14 @@ type StaffDraft = {
   isNew: boolean;
 };
 type SpreadsheetRow = Record<string, string>;
+type ErrorDetail = {
+  table: string;
+  action: string;
+  code: string;
+  message: string;
+  details: string;
+  hint: string;
+};
 
 const statusStyles: Record<AttendanceStatus, string> = {
   "参加": "bg-emerald-100 text-emerald-950 border-emerald-300",
@@ -315,11 +324,7 @@ async function readSpreadsheetRows(file: File) {
     throw new Error("xlsx、xls、csvファイルを選択してください。");
   }
 
-  const XLSX = await import("xlsx");
-  const workbook =
-    extension === "csv"
-      ? XLSX.read(await file.text(), { type: "string" })
-      : XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
   const firstSheetName = workbook.SheetNames[0];
   if (!firstSheetName) return [];
 
@@ -332,24 +337,27 @@ async function readSpreadsheetRows(file: File) {
   return normalizeSpreadsheetRows(rows);
 }
 
-async function downloadTemplateFile(fileName: string, sheetName: string, headers: string[]) {
-  const XLSX = await import("xlsx");
+function downloadTemplateFile(fileName: string, sheetName: string, headers: string[]) {
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet([headers]);
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
-  const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
-  const url = URL.createObjectURL(
-    new Blob([output], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    })
-  );
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  XLSX.writeFile(workbook, fileName, { bookType: "xlsx" });
+}
+
+function toErrorDetail(table: string, action: string, error: unknown): ErrorDetail {
+  const record =
+    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
+  const message =
+    typeof record.message === "string"
+      ? record.message
+      : error instanceof Error
+        ? error.message
+        : "詳細不明のエラーです。";
+  const code = typeof record.code === "string" ? record.code : "不明";
+  const details = typeof record.details === "string" ? record.details : "";
+  const hint = typeof record.hint === "string" ? record.hint : "";
+
+  return { table, action, code, message, details, hint };
 }
 
 function normalizeGrade(value: string | number | null | undefined) {
@@ -533,6 +541,7 @@ export default function Home() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [lastError, setLastError] = useState<ErrorDetail | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [guardians, setGuardians] = useState<GuardianRow[]>([]);
   const [players, setPlayers] = useState<PlayerRow[]>([]);
@@ -566,6 +575,18 @@ export default function Home() {
     keepSiblingsTogether: true,
     rideWithParentDriver: true
   });
+
+  function setNotice(nextMessage: string) {
+    setLastError(null);
+    setMessage(nextMessage);
+  }
+
+  function reportDataError(table: string, action: string, error: unknown) {
+    const detail = toErrorDetail(table, action, error);
+    console.error(`${action}に失敗しました`, detail, error);
+    setLastError(detail);
+    setMessage(`${action}に失敗しました。対象: ${table}。${detail.message}`);
+  }
 
   const selectedEvent = events.find((event) => event.id === selectedEventId) ?? null;
   const isParentLinkMode =
@@ -883,13 +904,13 @@ export default function Home() {
           .single();
 
     if (result.error) {
-      setMessage(`遠征の保存に失敗しました: ${result.error.message}`);
+      reportDataError("events", "遠征の保存", result.error);
       return;
     }
 
     setEventForm(initialEventForm);
     setEditingEventId(null);
-    setMessage(editingEventId ? "遠征を更新しました。" : "遠征を作成しました。");
+    setNotice(editingEventId ? "遠征を更新しました。" : "遠征を作成しました。");
     await loadSessionAndData(result.data.id);
   }
 
@@ -920,7 +941,7 @@ export default function Home() {
     const nextEventId = events.find((event) => event.id !== eventId)?.id ?? null;
     const { error } = await supabase.from("events").delete().eq("id", eventId);
     if (error) {
-      setMessage(`遠征の削除に失敗しました: ${error.message}`);
+      reportDataError("events", "遠征の削除", error);
       return;
     }
 
@@ -932,7 +953,7 @@ export default function Home() {
     ) {
       navigateTo("events");
     }
-    setMessage("遠征を削除しました。");
+    setNotice("遠征を削除しました。");
     await loadSessionAndData(nextEventId);
   }
 
@@ -953,11 +974,11 @@ export default function Home() {
 
     const { error } = await supabase.from("guardians").delete().eq("id", guardianId);
     if (error) {
-      setMessage(`保護者の削除に失敗しました: ${error.message}`);
+      reportDataError("guardians", "保護者の削除", error);
       return;
     }
 
-    setMessage("保護者を削除しました。");
+    setNotice("保護者を削除しました。");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -974,7 +995,7 @@ export default function Home() {
       .delete()
       .eq("player_id", playerId);
     if (deleteError) {
-      setMessage(`親子関係の更新に失敗しました: ${deleteError.message}`);
+      reportDataError("player_guardians", "親子関係の更新", deleteError);
       return false;
     }
 
@@ -988,7 +1009,7 @@ export default function Home() {
         }))
       );
       if (insertError) {
-        setMessage(`親子関係の保存に失敗しました: ${insertError.message}`);
+        reportDataError("player_guardians", "親子関係の保存", insertError);
         return false;
       }
     }
@@ -1017,7 +1038,7 @@ export default function Home() {
       .delete()
       .or(`player_id.eq.${playerId},sibling_player_id.eq.${playerId}`);
     if (deleteError) {
-      setMessage(`兄弟設定の更新に失敗しました: ${deleteError.message}`);
+      reportDataError("player_sibling_links", "兄弟設定の更新", deleteError);
       return false;
     }
 
@@ -1028,7 +1049,7 @@ export default function Home() {
       ]);
       const { error: insertError } = await supabase.from("player_sibling_links").insert(rows);
       if (insertError) {
-        setMessage(`兄弟設定の保存に失敗しました: ${insertError.message}`);
+        reportDataError("player_sibling_links", "兄弟設定の保存", insertError);
         return false;
       }
     }
@@ -1041,13 +1062,57 @@ export default function Home() {
     const player = players.find((item) => item.id === playerId);
     if (!window.confirm(`${player?.name ?? "この選手"} を削除します。よろしいですか？`)) return;
 
-    const { error } = await supabase.from("players").delete().eq("id", playerId);
-    if (error) {
-      setMessage(`選手の削除に失敗しました: ${error.message}`);
+    const allocationsWithPlayer = allocations.filter((allocation) =>
+      allocation.player_ids.includes(playerId)
+    );
+
+    for (const allocation of allocationsWithPlayer) {
+      const { error } = await supabase
+        .from("allocations")
+        .update({
+          player_ids: allocation.player_ids.filter((id) => id !== playerId)
+        })
+        .eq("id", allocation.id);
+      if (error) {
+        reportDataError("allocations", "配車結果から選手を外す処理", error);
+        return;
+      }
+    }
+
+    const { error: guardianDeleteError } = await supabase
+      .from("player_guardians")
+      .delete()
+      .eq("player_id", playerId);
+    if (guardianDeleteError) {
+      reportDataError("player_guardians", "選手の親子関係削除", guardianDeleteError);
       return;
     }
 
-    setMessage("選手を削除しました。");
+    const { error: siblingDeleteError } = await supabase
+      .from("player_sibling_links")
+      .delete()
+      .or(`player_id.eq.${playerId},sibling_player_id.eq.${playerId}`);
+    if (siblingDeleteError) {
+      reportDataError("player_sibling_links", "選手の兄弟関係削除", siblingDeleteError);
+      return;
+    }
+
+    const { error: attendanceDeleteError } = await supabase
+      .from("attendance")
+      .delete()
+      .eq("player_id", playerId);
+    if (attendanceDeleteError) {
+      reportDataError("attendance", "選手の出欠削除", attendanceDeleteError);
+      return;
+    }
+
+    const { error: playerDeleteError } = await supabase.from("players").delete().eq("id", playerId);
+    if (playerDeleteError) {
+      reportDataError("players", "選手の削除", playerDeleteError);
+      return;
+    }
+
+    setNotice("選手を削除しました");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1091,7 +1156,7 @@ export default function Home() {
       : await supabase.from("guardians").insert(payload);
 
     if (result.error) {
-      setMessage(`保護者の保存に失敗しました: ${result.error.message}`);
+      reportDataError("guardians", "保護者の保存", result.error);
       return false;
     }
 
@@ -1101,7 +1166,7 @@ export default function Home() {
   async function saveGuardianDraft(draft: GuardianDraft) {
     const saved = await persistGuardianDraft(draft);
     if (!saved) return;
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1110,7 +1175,7 @@ export default function Home() {
       const saved = await persistGuardianDraft(draft);
       if (!saved) return;
     }
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1150,7 +1215,7 @@ export default function Home() {
       : await supabase.from("players").insert(payload).select().single();
 
     if (result.error) {
-      setMessage(`選手の保存に失敗しました: ${result.error.message}`);
+      reportDataError("players", "選手の保存", result.error);
       return false;
     }
 
@@ -1173,7 +1238,7 @@ export default function Home() {
   async function savePlayerDraft(draft: PlayerDraft) {
     const saved = await persistPlayerDraft(draft);
     if (!saved) return;
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1182,7 +1247,7 @@ export default function Home() {
       const saved = await persistPlayerDraft(draft);
       if (!saved) return;
     }
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1295,6 +1360,9 @@ export default function Home() {
       const rows = await readSpreadsheetRows(file);
       let skipped = 0;
       let unlinked = 0;
+      let unlinkedGuardians = 0;
+      let unlinkedSiblings = 0;
+      let invalidGrades = 0;
       const importedDrafts = rows.flatMap((row) => {
         const name = getSpreadsheetCell(row, ["選手氏名", "選手名", "氏名", "名前"]);
         if (!name) {
@@ -1310,8 +1378,14 @@ export default function Home() {
         const linkedGuardian2 = guardianName2
           ? guardians.find((guardian) => guardian.name.trim() === guardianName2)
           : undefined;
-        if (guardianName1 && !linkedGuardian1) unlinked += 1;
-        if (guardianName2 && !linkedGuardian2) unlinked += 1;
+        if (guardianName1 && !linkedGuardian1) {
+          unlinked += 1;
+          unlinkedGuardians += 1;
+        }
+        if (guardianName2 && !linkedGuardian2) {
+          unlinked += 1;
+          unlinkedGuardians += 1;
+        }
         const siblingNames = [
           getSpreadsheetCell(row, ["兄弟1"]),
           getSpreadsheetCell(row, ["兄弟2"]),
@@ -1320,16 +1394,21 @@ export default function Home() {
         const linkedSiblings = siblingNames.map((siblingName) =>
           siblingName ? players.find((player) => player.name.trim() === siblingName) : undefined
         );
-        unlinked += siblingNames.filter((nameValue, index) => nameValue && !linkedSiblings[index]).length;
-        const importedGrade = normalizeGrade(getSpreadsheetCell(row, ["学年", "grade"]));
+        const missingSiblingCount = siblingNames.filter(
+          (nameValue, index) => nameValue && !linkedSiblings[index]
+        ).length;
+        unlinked += missingSiblingCount;
+        unlinkedSiblings += missingSiblingCount;
+        const rawGrade = getSpreadsheetCell(row, ["学年", "grade"]);
+        const importedGrade = normalizeGrade(rawGrade);
+        const isValidGrade = (gradeOptions as readonly string[]).includes(importedGrade);
+        if (rawGrade && !isValidGrade) invalidGrades += 1;
 
         return [
           {
             ...createPlayerDraft(),
             name,
-            grade: (gradeOptions as readonly string[]).includes(importedGrade)
-              ? importedGrade
-              : defaultGrade,
+            grade: isValidGrade ? importedGrade : defaultGrade,
             guardianId1: linkedGuardian1?.id ?? "",
             guardianId2:
               linkedGuardian2 && linkedGuardian2.id !== linkedGuardian1?.id ? linkedGuardian2.id : "",
@@ -1349,8 +1428,12 @@ export default function Home() {
       setPlayerDrafts((current) => [...current, ...importedDrafts]);
       setMessage(
         `${importedDrafts.length}件読み込みました${
-          unlinked > 0 ? `（${unlinked}件は保護者が未紐づけです）` : ""
-        }${skipped > 0 ? `。氏名が空欄の${skipped}行は読み込みませんでした。` : ""}`
+          unlinked > 0
+            ? `（未登録の保護者${unlinkedGuardians}件、未登録の兄弟${unlinkedSiblings}件は表上で選び直してください）`
+            : ""
+        }${invalidGrades > 0 ? `。学年が不正な${invalidGrades}件は小1にしました。` : ""}${
+          skipped > 0 ? `。氏名が空欄の${skipped}行は読み込みませんでした。` : ""
+        }`
       );
     } catch (error) {
       setMessage(
@@ -1363,7 +1446,7 @@ export default function Home() {
 
   async function downloadGuardianTemplate() {
     try {
-      await downloadTemplateFile("保護者Excelテンプレート.xlsx", "保護者", [
+      downloadTemplateFile("保護者テンプレート.xlsx", "保護者", [
         "保護者氏名",
         "メールアドレス",
         "電話番号",
@@ -1382,7 +1465,7 @@ export default function Home() {
 
   async function downloadPlayerTemplate() {
     try {
-      await downloadTemplateFile("選手Excelテンプレート.xlsx", "選手", [
+      downloadTemplateFile("選手テンプレート.xlsx", "選手", [
         "選手氏名",
         "学年",
         "保護者1氏名",
@@ -1428,7 +1511,7 @@ export default function Home() {
       : await supabase.from("staff").insert(payload);
 
     if (result.error) {
-      setMessage(`指導者の保存に失敗しました: ${result.error.message}`);
+      reportDataError("staff", "指導者の保存", result.error);
       return false;
     }
 
@@ -1438,7 +1521,7 @@ export default function Home() {
   async function saveStaffDraft(draft: StaffDraft) {
     const saved = await persistStaffDraft(draft);
     if (!saved) return;
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1447,7 +1530,7 @@ export default function Home() {
       const saved = await persistStaffDraft(draft);
       if (!saved) return;
     }
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1462,11 +1545,11 @@ export default function Home() {
     if (!window.confirm(`${draft.name || "この指導者"} を削除します。よろしいですか？`)) return;
     const { error } = await supabase.from("staff").delete().eq("id", draft.id);
     if (error) {
-      setMessage(`指導者の削除に失敗しました: ${error.message}`);
+      reportDataError("staff", "指導者の削除", error);
       return;
     }
 
-    setMessage("指導者を削除しました。");
+    setNotice("指導者を削除しました。");
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1478,6 +1561,7 @@ export default function Home() {
     try {
       const rows = await readSpreadsheetRows(file);
       let skipped = 0;
+      let invalidRoles = 0;
       const importedDrafts = rows.flatMap((row) => {
         const name = getSpreadsheetCell(row, ["指導者氏名", "氏名", "名前"]);
         if (!name) {
@@ -1486,9 +1570,9 @@ export default function Home() {
         }
 
         const roleValue = getSpreadsheetCell(row, ["役割", "role"]);
-        const role = staffRoleOptions.includes(roleValue as StaffRole)
-          ? (roleValue as StaffRole)
-          : "コーチ";
+        const isValidRole = staffRoleOptions.includes(roleValue as StaffRole);
+        if (roleValue && !isValidRole) invalidRoles += 1;
+        const role = isValidRole ? (roleValue as StaffRole) : "コーチ";
 
         return [
           {
@@ -1509,8 +1593,8 @@ export default function Home() {
       setStaffDrafts((current) => [...current, ...importedDrafts]);
       setMessage(
         `${importedDrafts.length}件読み込みました${
-          skipped > 0 ? `。氏名が空欄の${skipped}行は読み込みませんでした。` : ""
-        }`
+          invalidRoles > 0 ? `。役割が不正な${invalidRoles}件はコーチにしました。` : ""
+        }${skipped > 0 ? `。氏名が空欄の${skipped}行は読み込みませんでした。` : ""}`
       );
     } catch (error) {
       setMessage(
@@ -1523,7 +1607,7 @@ export default function Home() {
 
   async function downloadStaffTemplate() {
     try {
-      await downloadTemplateFile("指導者Excelテンプレート.xlsx", "指導者", [
+      downloadTemplateFile("指導者テンプレート.xlsx", "指導者", [
         "指導者氏名",
         "役割",
         "電話番号",
@@ -1567,11 +1651,11 @@ export default function Home() {
     );
 
     if (error) {
-      setMessage(`指導者出欠の保存に失敗しました: ${error.message}`);
+      reportDataError("staff_attendance", "指導者出欠の保存", error);
       return;
     }
 
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEvent.id);
   }
 
@@ -1612,11 +1696,11 @@ export default function Home() {
       .upsert(payload, { onConflict: "event_id,player_id" });
 
     if (error) {
-      setMessage(`保存に失敗しました: ${error.message}`);
+      reportDataError("attendance", "保護者回答の保存", error);
       return;
     }
 
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEvent.id, selectedGuardian.id, screen === "parent");
   }
 
@@ -1659,11 +1743,11 @@ export default function Home() {
     );
 
     if (error) {
-      setMessage(`回答の保存に失敗しました: ${error.message}`);
+      reportDataError("attendance", "回答の保存", error);
       return;
     }
 
-    setMessage("保存しました");
+    setNotice("保存しました");
     await loadSessionAndData(selectedEvent.id);
   }
 
@@ -1684,7 +1768,11 @@ export default function Home() {
       sort_order: eventAllocations.length
     });
 
-    if (error) setMessage(error.message);
+    if (error) {
+      reportDataError("allocations", "車両の追加", error);
+      return;
+    }
+    setNotice("車両を追加しました。");
     setCarForm({ driverName: "", carName: "", capacity: "4" });
     await loadSessionAndData(selectedEvent.id);
   }
@@ -1712,14 +1800,14 @@ export default function Home() {
     });
 
     if (error) {
-      setMessage(`荷物車の追加に失敗しました: ${error.message}`);
+      reportDataError("allocations", "荷物車の追加", error);
       return;
     }
 
     if (!cargoForm.passengerGuardianId) {
-      setMessage("荷物車を追加しました。同乗保護者が未設定です。可能なら保護者を1名設定してください。");
+      setNotice("荷物車を追加しました。同乗保護者が未設定です。可能なら保護者を1名設定してください。");
     } else {
-      setMessage("荷物車を追加しました。");
+      setNotice("荷物車を追加しました。");
     }
     setCargoForm({ driverName: "", carName: "荷物車", passengerGuardianId: "", cargoNote: "" });
     await loadSessionAndData(selectedEvent.id);
@@ -1891,10 +1979,10 @@ export default function Home() {
     );
 
     if (error) {
-      setMessage(error.message);
+      reportDataError("allocations", "配車表の保存", error);
       return;
     }
-    setMessage(warnings.length > 0 ? warnings.join("\n") : "配車表を作成しました。");
+    setNotice(warnings.length > 0 ? warnings.join("\n") : "配車表を作成しました。");
     await loadSessionAndData(selectedEvent.id);
   }
 
@@ -1911,11 +1999,16 @@ export default function Home() {
       autoAssignOptions
     );
 
-    await Promise.all(
+    const results = await Promise.all(
       assignedCars.map((car) =>
         client.from("allocations").update({ player_ids: car.player_ids }).eq("id", car.id)
       )
     );
+    const failed = results.find((result) => result.error);
+    if (failed?.error) {
+      reportDataError("allocations", "自動配車の保存", failed.error);
+      return;
+    }
     await loadSessionAndData(selectedEvent.id);
   }
 
@@ -1934,35 +2027,52 @@ export default function Home() {
     }
     if (targetCar) targetCar.player_ids = [...targetCar.player_ids, playerId];
 
-    await Promise.all(
+    const results = await Promise.all(
       nextCars.map((car) =>
         client.from("allocations").update({ player_ids: car.player_ids }).eq("id", car.id)
       )
     );
+    const failed = results.find((result) => result.error);
+    if (failed?.error) {
+      reportDataError("allocations", "配車結果の手動編集", failed.error);
+      return;
+    }
     await loadSessionAndData(selectedEvent.id);
   }
 
   async function completeRidePlan() {
     if (!supabase || !selectedEvent || !isAdmin) return;
-    await supabase
+    const { error } = await supabase
       .from("events")
       .update({ allocation_status: "confirmed" })
       .eq("id", selectedEvent.id);
+    if (error) {
+      reportDataError("events", "配車確定", error);
+      return;
+    }
     await loadSessionAndData(selectedEvent.id);
   }
 
   async function reopenRidePlanForEdit() {
     if (!supabase || !selectedEvent || !isAdmin) return;
-    await supabase
+    const { error } = await supabase
       .from("events")
       .update({ allocation_status: "draft" })
       .eq("id", selectedEvent.id);
+    if (error) {
+      reportDataError("events", "配車確定後の修正開始", error);
+      return;
+    }
     await loadSessionAndData(selectedEvent.id);
   }
 
   async function deleteCar(allocationId: string) {
     if (!supabase || !isAdmin || isAllocationConfirmed) return;
-    await supabase.from("allocations").delete().eq("id", allocationId);
+    const { error } = await supabase.from("allocations").delete().eq("id", allocationId);
+    if (error) {
+      reportDataError("allocations", "車両の削除", error);
+      return;
+    }
     await loadSessionAndData(selectedEventId);
   }
 
@@ -1996,11 +2106,11 @@ export default function Home() {
       .eq("id", allocationId);
 
     if (error) {
-      setMessage(`荷物車の保存に失敗しました: ${error.message}`);
+      reportDataError("allocations", "荷物車の保存", error);
       return;
     }
 
-    setMessage(payload.passengerGuardianId ? "保存しました" : "保存しました。同乗保護者が未設定です。");
+    setNotice(payload.passengerGuardianId ? "保存しました" : "保存しました。同乗保護者が未設定です。");
     await loadSessionAndData(selectedEvent.id);
   }
 
@@ -2458,6 +2568,7 @@ export default function Home() {
           )}
 
           {message && <p className="text-sm font-bold text-field">{message}</p>}
+          <ErrorDetails error={lastError} />
           <div className="grid gap-2">
             <button
               onClick={goBack}
@@ -2517,6 +2628,7 @@ export default function Home() {
       </header>
 
       <section className="mx-auto max-w-3xl px-4 py-5">
+        <ErrorDetails error={lastError} />
         {screen === "home" && (
           <div className="space-y-4">
             <DashboardCard
@@ -3713,6 +3825,46 @@ function EmptyState({ title, body }: { title: string; body?: string }) {
       <p className="text-base font-black text-slate-800">{title}</p>
       {body && <p className="mt-2 text-sm leading-6 text-slate-700">{body}</p>}
     </div>
+  );
+}
+
+function ErrorDetails({ error }: { error: ErrorDetail | null }) {
+  if (!error) return null;
+
+  return (
+    <details className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-950">
+      <summary className="cursor-pointer font-black">保存・削除エラーの詳細を表示</summary>
+      <dl className="mt-3 grid gap-2">
+        <div>
+          <dt className="font-black">対象テーブル</dt>
+          <dd className="break-all">{error.table}</dd>
+        </div>
+        <div>
+          <dt className="font-black">処理</dt>
+          <dd className="break-all">{error.action}</dd>
+        </div>
+        <div>
+          <dt className="font-black">エラーコード</dt>
+          <dd className="break-all">{error.code}</dd>
+        </div>
+        <div>
+          <dt className="font-black">エラーメッセージ</dt>
+          <dd className="break-all">{error.message}</dd>
+        </div>
+        {error.details && (
+          <div>
+            <dt className="font-black">詳細</dt>
+            <dd className="break-all">{error.details}</dd>
+          </div>
+        )}
+        {error.hint && (
+          <div>
+            <dt className="font-black">ヒント</dt>
+            <dd className="break-all">{error.hint}</dd>
+          </div>
+        )}
+      </dl>
+    </details>
   );
 }
 
