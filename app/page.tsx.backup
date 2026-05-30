@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase/client";
 import type {
   AllocationRow,
@@ -48,39 +48,30 @@ type PlayerDraft = {
   familyGroup: string;
   isNew: boolean;
 };
-type SpreadsheetRow = Record<string, string>;
 
 const statusStyles: Record<AttendanceStatus, string> = {
   "参加": "bg-field text-white border-field",
   "欠席": "bg-white text-rose-700 border-rose-200",
   "遅刻": "bg-amber-100 text-amber-900 border-amber-200",
-  "未回答": "bg-white text-slate-800 border-slate-300"
+  "未回答": "bg-white text-slate-500 border-slate-200"
 };
 
 const attendanceStatuses: AttendanceStatus[] = ["参加", "欠席", "遅刻", "未回答"];
 const tableInputClass =
-  "w-full min-w-36 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-night placeholder:text-slate-700 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-700";
+  "w-full min-w-36 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-600";
 const tableSelectClass =
-  "w-full min-w-32 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-700";
+  "w-full min-w-32 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-600";
 const formFieldClass =
-  "rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-700 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-700";
+  "rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-600";
 const tableHeaderClass =
   "whitespace-nowrap border border-slate-200 bg-slate-100 px-3 py-2 text-left text-xs font-black text-night";
 const tableCellClass = "border border-slate-200 bg-white px-2 py-2 align-top";
 const secondaryButtonClass =
-  "rounded-md bg-emerald-700 px-3 py-2 text-sm font-black text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-700";
+  "rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-black text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-600";
 const primaryButtonClass =
-  "rounded-md bg-field px-3 py-2 text-sm font-black text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-700";
-const addButtonClass =
-  "inline-flex w-full cursor-pointer items-center justify-center rounded-md bg-sky-700 px-3 py-2 text-sm font-black text-white hover:bg-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-300 active:bg-sky-900 disabled:bg-slate-200 disabled:text-slate-700";
+  "rounded-md bg-field px-3 py-2 text-sm font-black text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600";
 const dangerButtonClass =
-  "rounded-md border border-rose-200 bg-white px-3 py-2 text-sm font-black text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-200 active:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-700";
-const backButtonClass =
-  "rounded-md bg-slate-100 px-4 py-3 font-bold text-night hover:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-300 disabled:bg-slate-100 disabled:text-slate-700";
-const homeButtonClass =
-  "rounded-md bg-night px-4 py-3 font-bold text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-night/30 active:bg-black disabled:bg-slate-200 disabled:text-slate-700";
-const templateButtonClass =
-  "w-full rounded-md bg-night px-3 py-2 text-sm font-black text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-night/30 active:bg-black disabled:bg-slate-200 disabled:text-slate-700";
+  "rounded-md border border-rose-200 bg-white px-3 py-2 text-sm font-black text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-200 active:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-600";
 const gradeOptions = [
   "年少",
   "年中",
@@ -99,26 +90,6 @@ const gradeOptions = [
   "高3"
 ] as const;
 const defaultGrade = "小1";
-const demoGuardianEmails = new Set([
-  "taro-parent@example.com",
-  "minato-parent@example.com",
-  "haruto-parent@example.com",
-  "yuito-parent@example.com"
-]);
-const demoEventTitles = new Set([
-  "春季リーグ 第3戦",
-  "県外交流 遠征",
-  "練習試合",
-  "サンプル遠征"
-]);
-const demoPlayerSignatures = new Set([
-  "太郎|太郎の保護者",
-  "蓮|太郎の保護者",
-  "湊|湊の保護者",
-  "陽翔|陽翔の保護者",
-  "結翔|結翔の保護者",
-  "大翔|結翔の保護者"
-]);
 
 const initialEventForm = {
   title: "",
@@ -215,87 +186,6 @@ function createPlayerDraft(player?: PlayerRow): PlayerDraft {
     familyGroup: player?.family_group ?? "",
     isNew: !player
   };
-}
-
-function isDemoGuardian(guardian: GuardianRow) {
-  return demoGuardianEmails.has((guardian.email ?? "").toLowerCase());
-}
-
-function isDemoEvent(event: EventRow) {
-  return demoEventTitles.has(event.title);
-}
-
-function isDemoPlayer(player: PlayerRow, demoGuardianIds: Set<string>) {
-  return (
-    demoGuardianIds.has(player.guardian_id ?? "") ||
-    demoPlayerSignatures.has(`${player.name}|${player.parent_name}`)
-  );
-}
-
-function getSpreadsheetCell(row: SpreadsheetRow, names: string[]) {
-  for (const name of names) {
-    const value = row[name];
-    if (value !== undefined) return value.trim();
-  }
-  return "";
-}
-
-function normalizeSpreadsheetRows(rows: Record<string, unknown>[]) {
-  return rows.map((row) =>
-    Object.fromEntries(
-      Object.entries(row).map(([key, value]) => [key.trim(), String(value ?? "").trim()])
-    ) as SpreadsheetRow
-  );
-}
-
-function parseImportBoolean(value: string) {
-  const normalized = value.trim().toLowerCase();
-  return ["true", "1", "yes", "y", "はい", "可", "可能", "あり", "有", "○", "◯"].includes(
-    normalized
-  );
-}
-
-async function readSpreadsheetRows(file: File) {
-  const extension = file.name.split(".").pop()?.toLowerCase();
-  if (!extension || !["xlsx", "xls", "csv"].includes(extension)) {
-    throw new Error("xlsx、xls、csvファイルを選択してください。");
-  }
-
-  const XLSX = await import("xlsx");
-  const workbook =
-    extension === "csv"
-      ? XLSX.read(await file.text(), { type: "string" })
-      : XLSX.read(await file.arrayBuffer(), { type: "array" });
-  const firstSheetName = workbook.SheetNames[0];
-  if (!firstSheetName) return [];
-
-  const sheet = workbook.Sheets[firstSheetName];
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-    defval: "",
-    raw: false
-  });
-
-  return normalizeSpreadsheetRows(rows);
-}
-
-async function downloadTemplateFile(fileName: string, sheetName: string, headers: string[]) {
-  const XLSX = await import("xlsx");
-  const workbook = XLSX.utils.book_new();
-  const sheet = XLSX.utils.aoa_to_sheet([headers]);
-  XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
-  const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
-  const url = URL.createObjectURL(
-    new Blob([output], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    })
-  );
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
 }
 
 function normalizeGrade(value: string | number | null | undefined) {
@@ -597,29 +487,13 @@ export default function Home() {
     if (playersResult.error) setMessage(`選手データの取得に失敗しました: ${playersResult.error.message}`);
     if (attendanceResult.error) setMessage(`出欠データの取得に失敗しました: ${attendanceResult.error.message}`);
     if (allocationsResult.error) setMessage(`配車データの取得に失敗しました: ${allocationsResult.error.message}`);
-    const allEvents = (eventsResult.data ?? []) as EventRow[];
-    const allGuardians = (guardiansResult.data ?? []) as GuardianRow[];
-    const demoGuardianIds = new Set(
-      allGuardians.filter((guardian) => isDemoGuardian(guardian)).map((guardian) => guardian.id)
-    );
-    const loadedEvents = allEvents.filter((event) => !isDemoEvent(event));
-    const visibleEventIds = new Set(loadedEvents.map((event) => event.id));
-    const loadedGuardians = allGuardians.filter((guardian) => !isDemoGuardian(guardian));
-    const visibleGuardianIds = new Set(loadedGuardians.map((guardian) => guardian.id));
-    const loadedPlayers = ((playersResult.data ?? []) as PlayerRow[]).filter(
-      (player) =>
-        !isDemoPlayer(player, demoGuardianIds) &&
-        (!player.guardian_id || visibleGuardianIds.has(player.guardian_id))
-    ).sort(
+    const loadedEvents = (eventsResult.data ?? []) as EventRow[];
+    const loadedGuardians = (guardiansResult.data ?? []) as GuardianRow[];
+    const loadedPlayers = ((playersResult.data ?? []) as PlayerRow[]).sort(
       (a, b) => gradeRank(b.grade) - gradeRank(a.grade) || a.name.localeCompare(b.name, "ja")
     );
-    const visiblePlayerIds = new Set(loadedPlayers.map((player) => player.id));
-    const loadedAttendance = ((attendanceResult.data ?? []) as AttendanceRow[]).filter(
-      (row) => visibleEventIds.has(row.event_id) && visiblePlayerIds.has(row.player_id)
-    );
-    const loadedAllocations = ((allocationsResult.data ?? []) as AllocationRow[]).filter((row) =>
-      visibleEventIds.has(row.event_id)
-    );
+    const loadedAttendance = (attendanceResult.data ?? []) as AttendanceRow[];
+    const loadedAllocations = (allocationsResult.data ?? []) as AllocationRow[];
     setEvents(loadedEvents);
     setGuardians(loadedGuardians);
     setPlayers(loadedPlayers);
@@ -776,14 +650,14 @@ export default function Home() {
   async function handleGuardianSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!supabase || !isAdmin) return;
-    if (!guardianForm.name.trim()) {
-      setMessage("保護者名を入力してください。");
+    if (!guardianForm.name.trim() || !guardianForm.email.trim()) {
+      setMessage("保護者名とメールアドレスを入力してください。");
       return;
     }
 
     const payload = {
       name: guardianForm.name.trim(),
-      email: guardianForm.email.trim() || null,
+      email: guardianForm.email.trim(),
       phone: guardianForm.phone.trim() || null,
       note: guardianForm.note.trim() || null,
       can_drive_default: guardianForm.canDrive,
@@ -808,7 +682,7 @@ export default function Home() {
     setGuardianForm({
       id: guardian.id,
       name: guardian.name,
-      email: guardian.email ?? "",
+      email: guardian.email,
       phone: guardian.phone ?? "",
       note: guardian.note ?? "",
       canDrive: guardian.can_drive_default,
@@ -923,14 +797,14 @@ export default function Home() {
 
   async function persistGuardianDraft(draft: GuardianDraft) {
     if (!supabase || !isAdmin) return false;
-    if (!draft.name.trim()) {
-      setMessage("保護者氏名を入力してください。");
+    if (!draft.name.trim() || !draft.email.trim()) {
+      setMessage("保護者氏名とメールアドレスを入力してください。");
       return false;
     }
 
     const payload = {
       name: draft.name.trim(),
-      email: draft.email.trim() || null,
+      email: draft.email.trim(),
       phone: draft.phone.trim() || null,
       note: draft.note.trim() || null,
       can_drive_default: draft.canDrive,
@@ -1027,188 +901,6 @@ export default function Home() {
     }
 
     await deletePlayer(draft.id);
-  }
-
-  function mergeGuardianDrafts(importedDrafts: GuardianDraft[]) {
-    setGuardianDrafts((current) => {
-      const next = [...current];
-
-      importedDrafts.forEach((draft) => {
-        const normalizedEmail = draft.email.trim().toLowerCase();
-        const indexById = draft.id ? next.findIndex((item) => item.id === draft.id) : -1;
-        const indexByEmail = normalizedEmail
-          ? next.findIndex((item) => item.email.trim().toLowerCase() === normalizedEmail)
-          : -1;
-        const targetIndex = indexById >= 0 ? indexById : indexByEmail;
-
-        if (targetIndex >= 0) {
-          next[targetIndex] = {
-            ...draft,
-            localId: next[targetIndex].localId,
-            id: next[targetIndex].id || draft.id,
-            isNew: next[targetIndex].isNew && !draft.id
-          };
-        } else {
-          next.push(draft);
-        }
-      });
-
-      return next;
-    });
-  }
-
-  async function handleGuardianImportFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    try {
-      const rows = await readSpreadsheetRows(file);
-      let skipped = 0;
-      let matched = 0;
-      const importedDrafts = rows.flatMap((row) => {
-        const name = getSpreadsheetCell(row, ["保護者氏名", "保護者名", "氏名", "名前"]);
-        if (!name) {
-          skipped += 1;
-          return [];
-        }
-
-        const email = getSpreadsheetCell(row, ["メールアドレス", "メール", "Email", "email"]);
-        const existingGuardian = email
-          ? guardians.find(
-              (guardian) => (guardian.email ?? "").toLowerCase() === email.toLowerCase()
-            )
-          : undefined;
-        if (existingGuardian) matched += 1;
-
-        return [
-          {
-            ...createGuardianDraft(existingGuardian),
-            name,
-            email,
-            phone: getSpreadsheetCell(row, ["電話番号", "電話", "TEL", "tel"]),
-            note: getSpreadsheetCell(row, ["備考", "メモ", "note"]),
-            canDrive: parseImportBoolean(
-              getSpreadsheetCell(row, ["車出し初期可否", "車出し", "車出し可否"])
-            ),
-            capacity:
-              getSpreadsheetCell(row, ["乗車可能人数", "乗車人数", "定員"]) ||
-              String(existingGuardian?.car_capacity_default ?? 4),
-            isNew: !existingGuardian
-          }
-        ];
-      });
-
-      if (importedDrafts.length === 0) {
-        setMessage("読み込める保護者データがありません。保護者氏名の列を確認してください。");
-        return;
-      }
-
-      mergeGuardianDrafts(importedDrafts);
-      setMessage(
-        `${importedDrafts.length}件読み込みました${
-          matched > 0 ? `（${matched}件はメールアドレス一致のため上書き候補です）` : ""
-        }${skipped > 0 ? `。氏名が空欄の${skipped}行は読み込みませんでした。` : ""}`
-      );
-    } catch (error) {
-      setMessage(
-        `保護者インポートに失敗しました: ${
-          error instanceof Error ? error.message : "ファイルを確認してください。"
-        }`
-      );
-    }
-  }
-
-  async function handlePlayerImportFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    try {
-      const rows = await readSpreadsheetRows(file);
-      let skipped = 0;
-      let unlinked = 0;
-      const importedDrafts = rows.flatMap((row) => {
-        const name = getSpreadsheetCell(row, ["選手氏名", "選手名", "氏名", "名前"]);
-        if (!name) {
-          skipped += 1;
-          return [];
-        }
-
-        const guardianName = getSpreadsheetCell(row, ["保護者氏名", "保護者名", "保護者"]);
-        const linkedGuardian = guardianName
-          ? guardians.find((guardian) => guardian.name.trim() === guardianName)
-          : undefined;
-        if (!linkedGuardian) unlinked += 1;
-        const importedGrade = normalizeGrade(getSpreadsheetCell(row, ["学年", "grade"]));
-
-        return [
-          {
-            ...createPlayerDraft(),
-            name,
-            grade: (gradeOptions as readonly string[]).includes(importedGrade)
-              ? importedGrade
-              : defaultGrade,
-            guardianId: linkedGuardian?.id ?? "",
-            familyGroup: getSpreadsheetCell(row, ["兄弟グループ", "兄弟", "family_group"])
-          }
-        ];
-      });
-
-      if (importedDrafts.length === 0) {
-        setMessage("読み込める選手データがありません。選手氏名の列を確認してください。");
-        return;
-      }
-
-      setPlayerDrafts((current) => [...current, ...importedDrafts]);
-      setMessage(
-        `${importedDrafts.length}件読み込みました${
-          unlinked > 0 ? `（${unlinked}件は保護者が未紐づけです）` : ""
-        }${skipped > 0 ? `。氏名が空欄の${skipped}行は読み込みませんでした。` : ""}`
-      );
-    } catch (error) {
-      setMessage(
-        `選手インポートに失敗しました: ${
-          error instanceof Error ? error.message : "ファイルを確認してください。"
-        }`
-      );
-    }
-  }
-
-  async function downloadGuardianTemplate() {
-    try {
-      await downloadTemplateFile("保護者Excelテンプレート.xlsx", "保護者", [
-        "保護者氏名",
-        "メールアドレス",
-        "電話番号",
-        "車出し初期可否",
-        "乗車可能人数",
-        "備考"
-      ]);
-    } catch (error) {
-      setMessage(
-        `保護者テンプレートの作成に失敗しました: ${
-          error instanceof Error ? error.message : "もう一度お試しください。"
-        }`
-      );
-    }
-  }
-
-  async function downloadPlayerTemplate() {
-    try {
-      await downloadTemplateFile("選手Excelテンプレート.xlsx", "選手", [
-        "選手氏名",
-        "学年",
-        "保護者氏名",
-        "兄弟グループ"
-      ]);
-    } catch (error) {
-      setMessage(
-        `選手テンプレートの作成に失敗しました: ${
-          error instanceof Error ? error.message : "もう一度お試しください。"
-        }`
-      );
-    }
   }
 
   async function handleParentSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1499,10 +1191,10 @@ export default function Home() {
 
   if (!isSupabaseConfigured) {
     return (
-      <main className="min-h-screen bg-chalk px-4 py-10 text-slate-900">
+      <main className="min-h-screen bg-chalk px-4 py-10">
         <section className="mx-auto max-w-md rounded-lg bg-white p-5 shadow-soft">
           <h1 className="text-xl font-black">Supabase設定が必要です</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-700">
+          <p className="mt-3 text-sm leading-6 text-slate-600">
             `.env.local` に `NEXT_PUBLIC_SUPABASE_URL` と
             `NEXT_PUBLIC_SUPABASE_ANON_KEY` を設定してください。
           </p>
@@ -1513,12 +1205,12 @@ export default function Home() {
 
   if (screen === "landing") {
     return (
-      <main className="min-h-[100dvh] bg-chalk px-4 py-8 text-slate-900" style={appBackgroundStyle}>
+      <main className="min-h-[100dvh] bg-chalk px-4 py-8" style={appBackgroundStyle}>
         <section className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-md flex-col justify-center">
           <div className="mb-8">
-            <p className="mb-3 text-sm font-bold text-slate-800">少年野球遠征配車</p>
+            <p className="mb-3 text-sm font-bold text-clay">少年野球遠征配車</p>
             <h1 className="text-3xl font-black leading-tight">使う画面を選んでください</h1>
-            <p className="mt-4 text-sm leading-6 text-slate-700">
+            <p className="mt-4 text-sm leading-6 text-slate-600">
               保護者は遠征を選んで出欠と車出し可否を入力できます。管理者はログインして遠征、保護者、選手、配車を管理します。
             </p>
           </div>
@@ -1533,7 +1225,7 @@ export default function Home() {
               className="rounded-lg border border-emerald-200 bg-white px-5 py-7 text-left text-night shadow-soft hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-100"
             >
               <span className="block text-2xl font-black">保護者用</span>
-              <span className="mt-2 block text-sm font-bold text-slate-700">
+              <span className="mt-2 block text-sm font-bold text-slate-600">
                 遠征を選んで、家庭の出欠・車出しを入力
               </span>
             </button>
@@ -1559,14 +1251,14 @@ export default function Home() {
 
   if (screen === "adminLogin") {
     return (
-      <main className="min-h-[100dvh] bg-chalk px-4 py-8 text-slate-900" style={appBackgroundStyle}>
+      <main className="min-h-[100dvh] bg-chalk px-4 py-8" style={appBackgroundStyle}>
         <section className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-md flex-col justify-center">
           <div className="mb-8">
-            <p className="mb-3 text-sm font-bold text-slate-800">少年野球遠征配車</p>
+            <p className="mb-3 text-sm font-bold text-clay">少年野球遠征配車</p>
             <h1 className="text-3xl font-black leading-tight">
               Supabaseで共有する配車管理
             </h1>
-            <p className="mt-4 text-sm leading-6 text-slate-700">
+            <p className="mt-4 text-sm leading-6 text-slate-600">
               管理者はログインして全データを編集できます。保護者は共有URLから入力できます。
             </p>
           </div>
@@ -1578,7 +1270,7 @@ export default function Home() {
               type="email"
               autoComplete="email"
               required
-              className="mb-4 w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-700 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
+              className="mb-4 w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
             />
             <label className="mb-2 block text-sm font-bold">パスワード</label>
             <input
@@ -1587,7 +1279,7 @@ export default function Home() {
               type="password"
               autoComplete="current-password"
               required
-              className="mb-3 w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-700 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
+              className="mb-3 w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
             />
             {loginErrorEmail && (
               <p className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">
@@ -1597,7 +1289,7 @@ export default function Home() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-700"
+              className="w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600"
             >
               {loading ? "ログイン中..." : "管理者としてログイン"}
             </button>
@@ -1606,14 +1298,14 @@ export default function Home() {
             <button
               type="button"
               onClick={goBack}
-              className={backButtonClass}
+              className="rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               戻る
             </button>
             <button
               type="button"
               onClick={goHome}
-              className={homeButtonClass}
+              className="rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               ホームに戻る
             </button>
@@ -1634,12 +1326,12 @@ export default function Home() {
       : [];
 
     return (
-      <main className="min-h-[100dvh] bg-chalk px-4 py-6 text-slate-900" style={appBackgroundStyle}>
+      <main className="min-h-[100dvh] bg-chalk px-4 py-6" style={appBackgroundStyle}>
         <section className="mx-auto max-w-md space-y-5">
           <div className="rounded-lg bg-white p-5 shadow-soft">
-            <p className="text-sm font-bold text-slate-800">保護者用</p>
+            <p className="text-sm font-bold text-clay">保護者用</p>
             <h1 className="mt-2 text-2xl font-black">出欠・車出し入力</h1>
-            <p className="mt-2 text-sm leading-6 text-slate-700">
+            <p className="mt-2 text-sm leading-6 text-slate-600">
               遠征を選び、ご自身の家庭の出欠と車出し可否を入力してください。
             </p>
           </div>
@@ -1669,7 +1361,7 @@ export default function Home() {
                 ))}
               </select>
               {selectedEvent && (
-                <p className="mt-3 text-sm leading-6 text-slate-700">
+                <p className="mt-3 text-sm leading-6 text-slate-600">
                   {selectedEvent.place} / {selectedEvent.event_type}
                 </p>
               )}
@@ -1678,8 +1370,8 @@ export default function Home() {
 
           {selectedEvent && guardians.length === 0 && (
             <EmptyState
-              title="保護者がまだ登録されていません。管理者が保護者を登録してください。"
-              body="保護者が登録されると、ここから家庭を選択できます。"
+              title="保護者がまだ登録されていません。"
+              body="管理者が保護者を登録すると、ここから家庭を選択できます。"
             />
           )}
 
@@ -1710,7 +1402,7 @@ export default function Home() {
                     <h2 className="mb-3 text-lg font-black">選手ごとの参加可否</h2>
                     {guardianPlayers.length === 0 ? (
                       <EmptyState
-                        title="選手がまだ登録されていません。管理者が選手を登録してください。"
+                        title="この保護者に紐づく選手がいません。"
                         body="管理者が選手管理で保護者を紐づけてください。"
                       />
                     ) : (
@@ -1822,7 +1514,7 @@ export default function Home() {
                         type="number"
                         min="1"
                         placeholder="乗車可能人数"
-                        className="rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-700 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
+                        className="rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
                       />
                     </div>
                   )}
@@ -1834,12 +1526,12 @@ export default function Home() {
                     }
                     placeholder="備考"
                     rows={3}
-                    className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-700 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
+                    className="w-full rounded-md border border-slate-200 bg-white px-4 py-3 text-night placeholder:text-slate-400 focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20"
                   />
 
                   <button
                     disabled={guardianPlayers.length === 0}
-                    className="w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-700"
+                    className="w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600"
                   >
                     保存する
                   </button>
@@ -1861,17 +1553,17 @@ export default function Home() {
                       />
                     </div>
                   ) : (
-                    <p className="mt-3 text-sm font-bold text-slate-700">
+                    <p className="mt-3 text-sm font-bold text-slate-500">
                       この家庭の選手はまだ配車結果に入っていません。
                     </p>
                   )
                 ) : (
-                  <p className="mt-3 text-sm font-bold text-slate-700">
+                  <p className="mt-3 text-sm font-bold text-slate-500">
                     保護者を選択すると配車結果を確認できます。
                   </p>
                 )
               ) : (
-                <p className="mt-3 rounded-md bg-slate-50 px-3 py-3 text-sm font-bold text-slate-700">
+                <p className="mt-3 rounded-md bg-slate-50 px-3 py-3 text-sm font-bold text-slate-600">
                   配車はまだ確定していません
                 </p>
               )}
@@ -1882,20 +1574,20 @@ export default function Home() {
           <div className="grid gap-2">
             <button
               onClick={goBack}
-              className={`w-full ${backButtonClass}`}
+              className="w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               戻る
             </button>
             <button
               onClick={goHome}
-              className={`w-full ${homeButtonClass}`}
+              className="w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               ホームに戻る
             </button>
             {isAdmin && !isParentLinkMode && (
               <button
                 onClick={() => navigateTo("home")}
-                className={`w-full ${homeButtonClass}`}
+                className="w-full rounded-md bg-night px-4 py-3 font-bold text-white"
               >
                 管理者メニューへ戻る
               </button>
@@ -1907,23 +1599,23 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-[100dvh] bg-chalk pb-28 text-slate-900" style={appBackgroundStyle}>
+    <main className="min-h-[100dvh] bg-chalk pb-28" style={appBackgroundStyle}>
       <header className="sticky top-0 z-20 border-b border-black/5 bg-chalk/95 px-4 py-3 backdrop-blur">
         <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-bold text-slate-800">{adminEmail}</p>
+            <p className="text-xs font-bold text-clay">{adminEmail}</p>
             <h1 className="text-lg font-black">遠征配車管理</h1>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             <button
               onClick={goBack}
-              className={backButtonClass}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-black text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               戻る
             </button>
             <button
               onClick={goHome}
-              className={homeButtonClass}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-black text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200"
             >
               ホームに戻る
             </button>
@@ -2057,10 +1749,10 @@ export default function Home() {
                   {event.event_type}
                 </span>
                 <h3 className="mt-3 text-lg font-black">{event.title}</h3>
-                <p className="mt-1 text-sm text-slate-700">
+                <p className="mt-1 text-sm text-slate-600">
                   {formatDate(event.starts_at)} / {event.place}
                 </p>
-                <p className="mt-2 break-all rounded-md bg-slate-50 p-2 text-xs font-bold text-slate-700">
+                <p className="mt-2 break-all rounded-md bg-slate-50 p-2 text-xs font-bold text-slate-600">
                   {shareUrl(event.id)}
                 </p>
                 <div className="mt-3 grid grid-cols-2 gap-2">
@@ -2126,26 +1818,9 @@ export default function Home() {
               body="Excelのように一覧表から保護者情報を直接編集できます。"
             />
             <div className="rounded-lg bg-white p-4 shadow-soft">
-              <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <button type="button" onClick={addGuardianDraft} className={addButtonClass}>
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button type="button" onClick={addGuardianDraft} className={primaryButtonClass}>
                   保護者を追加
-                </button>
-                <button
-                  type="button"
-                  onClick={() => document.getElementById("guardian-import-input")?.click()}
-                  className={addButtonClass}
-                >
-                  Excelから保護者をインポート
-                </button>
-                <input
-                  id="guardian-import-input"
-                  type="file"
-                  accept=".xlsx,.xls,.csv"
-                  className="hidden"
-                  onChange={handleGuardianImportFile}
-                />
-                <button type="button" onClick={downloadGuardianTemplate} className={templateButtonClass}>
-                  保護者Excelテンプレートをダウンロード
                 </button>
                 <button type="button" onClick={saveAllGuardianDrafts} className={secondaryButtonClass}>
                   すべて保存
@@ -2169,8 +1844,8 @@ export default function Home() {
                   <tbody>
                     {guardianDrafts.length === 0 && (
                       <tr>
-                        <td colSpan={9} className="border border-slate-200 bg-white px-3 py-5 text-center text-sm font-bold text-slate-700">
-                          保護者がまだ登録されていません。管理者が保護者を登録してください。
+                        <td colSpan={9} className="border border-slate-200 bg-white px-3 py-5 text-center text-sm font-bold text-slate-600">
+                          保護者がまだ登録されていません。
                         </td>
                       </tr>
                     )}
@@ -2234,7 +1909,7 @@ export default function Home() {
                           <td className={tableCellClass}>
                             <div className="flex min-w-44 flex-wrap gap-1">
                               {linkedPlayers.length === 0 && (
-                                <span className="text-xs font-bold text-slate-700">未設定</span>
+                                <span className="text-xs font-bold text-slate-500">未設定</span>
                               )}
                               {linkedPlayers.map((player) => (
                                 <span key={player.id} className="rounded-md bg-slate-100 px-2 py-1 text-xs font-bold text-night">
@@ -2271,26 +1946,9 @@ export default function Home() {
               body="Excelのように一覧表から選手と親子関係を直接編集できます。"
             />
             <div className="rounded-lg bg-white p-4 shadow-soft">
-              <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <button type="button" onClick={addPlayerDraft} className={addButtonClass}>
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button type="button" onClick={addPlayerDraft} className={primaryButtonClass}>
                   選手を追加
-                </button>
-                <button
-                  type="button"
-                  onClick={() => document.getElementById("player-import-input")?.click()}
-                  className={addButtonClass}
-                >
-                  Excelから選手をインポート
-                </button>
-                <input
-                  id="player-import-input"
-                  type="file"
-                  accept=".xlsx,.xls,.csv"
-                  className="hidden"
-                  onChange={handlePlayerImportFile}
-                />
-                <button type="button" onClick={downloadPlayerTemplate} className={templateButtonClass}>
-                  選手Excelテンプレートをダウンロード
                 </button>
                 <button type="button" onClick={saveAllPlayerDrafts} className={secondaryButtonClass}>
                   すべて保存
@@ -2311,8 +1969,8 @@ export default function Home() {
                   <tbody>
                     {playerDrafts.length === 0 && (
                       <tr>
-                        <td colSpan={6} className="border border-slate-200 bg-white px-3 py-5 text-center text-sm font-bold text-slate-700">
-                          選手がまだ登録されていません。管理者が選手を登録してください。
+                        <td colSpan={6} className="border border-slate-200 bg-white px-3 py-5 text-center text-sm font-bold text-slate-600">
+                          選手がまだ登録されていません。
                         </td>
                       </tr>
                     )}
@@ -2345,7 +2003,7 @@ export default function Home() {
                             onChange={(event) => updatePlayerDraft(draft.localId, { guardianId: event.target.value })}
                             className={`${tableSelectClass} min-w-44`}
                           >
-                            <option value="">未紐づけ（保護者を選択）</option>
+                            <option value="">保護者を選択</option>
                             {guardians.map((guardian) => (
                               <option key={guardian.id} value={guardian.id}>
                                 {guardian.name}
@@ -2414,7 +2072,7 @@ export default function Home() {
 
             {selectedEvent && players.length === 0 && (
               <EmptyState
-                title="選手がまだ登録されていません。管理者が選手を登録してください。"
+                title="選手がまだ登録されていません。"
                 body="選手を登録すると、ここで出欠・車出し回答を確認できます。"
               />
             )}
@@ -2436,10 +2094,10 @@ export default function Home() {
                           <h3 className="text-lg font-black">
                             {player.name} {normalizeGrade(player.grade)}
                           </h3>
-                          <p className="mt-1 text-sm text-slate-700">
+                          <p className="mt-1 text-sm text-slate-600">
                             保護者: {guardian?.name ?? "未設定"}
                           </p>
-                          <p className="mt-1 text-xs font-bold text-slate-700">
+                          <p className="mt-1 text-xs font-bold text-slate-400">
                             {row?.submitted_at
                               ? `最終回答: ${formatDate(row.submitted_at)}`
                               : "未回答"}
@@ -2551,13 +2209,13 @@ export default function Home() {
             </div>
             <div className="rounded-lg bg-white p-4 shadow-soft">
               <h3 className="font-black">回答から配車表を作成</h3>
-              <p className="mt-1 text-sm text-slate-700">
+              <p className="mt-1 text-sm text-slate-600">
                 車出し可能な保護者回答を車両にし、自動配車します。
               </p>
               <button
                 onClick={createRidePlanFromResponses}
                 disabled={isAllocationConfirmed}
-                className="mt-4 w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-700"
+                className="mt-4 w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600"
               >
                 回答から配車表を作成
               </button>
@@ -2572,7 +2230,7 @@ export default function Home() {
                 <button
                   onClick={completeRidePlan}
                   disabled={eventAllocations.length === 0}
-                  className="mt-2 w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-700"
+                  className="mt-2 w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-600"
                 >
                   配車確定
                 </button>
@@ -2609,7 +2267,7 @@ export default function Home() {
                 />
                 <button
                   disabled={isAllocationConfirmed}
-                  className="rounded-md bg-night px-4 py-4 font-bold text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-night/30 active:bg-black disabled:bg-slate-200 disabled:text-slate-700"
+                  className="rounded-md bg-night px-4 py-4 font-bold text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-night/30 active:bg-black disabled:bg-slate-200 disabled:text-slate-600"
                 >
                   車両追加
                 </button>
@@ -2651,14 +2309,14 @@ export default function Home() {
               <button
                 onClick={autoAssignExistingCars}
                 disabled={eventAllocations.length === 0 || isAllocationConfirmed}
-                className="mt-3 w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-700"
+                className="mt-3 w-full rounded-md bg-field px-4 py-4 font-bold text-white hover:bg-emerald-800 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-emerald-900 disabled:bg-slate-200 disabled:text-slate-600"
               >
                 既存車両で自動配車
               </button>
               <button
                 onClick={copyRidePlanText}
                 disabled={eventAllocations.length === 0}
-                className="mt-2 w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-700"
+                className="mt-2 w-full rounded-md border border-slate-300 bg-white px-4 py-3 font-bold text-night hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-200 disabled:bg-slate-100 disabled:text-slate-600"
               >
                 配車表LINE文コピー
               </button>
@@ -2690,7 +2348,7 @@ export default function Home() {
                         value={assignedCar?.id ?? ""}
                         onChange={(event) => assignPlayerToCar(player.id, event.target.value)}
                         disabled={row?.status === "欠席" || isAllocationConfirmed}
-                        className="rounded-md border border-slate-200 bg-white px-4 py-3 text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-700"
+                        className="rounded-md border border-slate-200 bg-white px-4 py-3 text-night focus:border-field focus:outline-none focus:ring-2 focus:ring-field/20 disabled:bg-slate-100 disabled:text-slate-600"
                       >
                         <option value="">未割当</option>
                         {eventAllocations.map((car) => (
@@ -2845,7 +2503,7 @@ function AdminNavButton({
       className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-4 text-left text-night hover:bg-white focus:outline-none focus:ring-2 focus:ring-field/30 active:bg-slate-100"
     >
       <span className="block text-base font-black text-night">{title}</span>
-      <span className="mt-1 block text-sm leading-5 text-slate-700">{body}</span>
+      <span className="mt-1 block text-sm leading-5 text-slate-600">{body}</span>
     </button>
   );
 }
@@ -2854,7 +2512,7 @@ function EmptyState({ title, body }: { title: string; body?: string }) {
   return (
     <div className="rounded-lg border border-dashed border-slate-300 bg-white p-5 text-center shadow-soft">
       <p className="text-base font-black text-slate-800">{title}</p>
-      {body && <p className="mt-2 text-sm leading-6 text-slate-700">{body}</p>}
+      {body && <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>}
     </div>
   );
 }
@@ -2870,9 +2528,9 @@ function DashboardCard({
 }) {
   return (
     <div className="rounded-lg bg-white p-5 shadow-soft">
-      <p className="text-sm font-bold text-slate-800">{label}</p>
+      <p className="text-sm font-bold text-clay">{label}</p>
       <h2 className="mt-1 text-2xl font-black">{title}</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-700">{body}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
     </div>
   );
 }
@@ -2888,9 +2546,9 @@ function HeaderBlock({
 }) {
   return (
     <div>
-      <p className="text-sm font-bold text-slate-800">{label}</p>
+      <p className="text-sm font-bold text-clay">{label}</p>
       <h2 className="text-2xl font-black">{title}</h2>
-      <p className="mt-1 text-sm text-slate-700">{body}</p>
+      <p className="mt-1 text-sm text-slate-600">{body}</p>
     </div>
   );
 }
@@ -2898,7 +2556,7 @@ function HeaderBlock({
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg bg-white p-4 shadow-soft">
-      <p className="text-sm font-bold text-slate-700">{label}</p>
+      <p className="text-sm font-bold text-slate-500">{label}</p>
       <p className="mt-2 text-3xl font-black">{value}</p>
     </div>
   );
@@ -2915,14 +2573,6 @@ function AllocationResult({
   locked?: boolean;
   onDelete?: (id: string) => void;
 }) {
-  if (allocations.length === 0) {
-    return (
-      <div className="rounded-lg border border-dashed border-slate-300 bg-white p-5 text-center shadow-soft">
-        <p className="text-base font-black text-slate-900">配車結果はまだありません。</p>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-3">
       {allocations.map((car) => (
@@ -2930,13 +2580,13 @@ function AllocationResult({
           <div className="mb-3 flex items-start justify-between gap-3">
             <div>
               <h3 className="text-lg font-black">{car.car_name}</h3>
-              <p className="mt-1 text-sm text-slate-700">運転者: {car.driver_name}</p>
+              <p className="mt-1 text-sm text-slate-600">運転者: {car.driver_name}</p>
             </div>
             {onDelete && (
               <button
                 disabled={locked}
                 onClick={() => onDelete(car.id)}
-                className="rounded-md border border-rose-200 bg-white px-3 py-2 text-sm font-bold text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-200 active:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-700"
+                className="rounded-md border border-rose-200 bg-white px-3 py-2 text-sm font-bold text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-200 active:bg-rose-100 disabled:bg-slate-100 disabled:text-slate-600"
               >
                 削除
               </button>
@@ -2947,7 +2597,7 @@ function AllocationResult({
           </div>
           <div className="flex flex-wrap gap-2">
             {car.player_ids.length === 0 && (
-              <span className="text-sm font-bold text-slate-700">未割当</span>
+              <span className="text-sm font-bold text-slate-400">未割当</span>
             )}
             {car.player_ids.map((playerId) => {
               const player = players.find((item) => item.id === playerId);

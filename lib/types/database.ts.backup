@@ -18,7 +18,7 @@ export type EventRow = {
 export type GuardianRow = {
   id: string;
   name: string;
-  email: string | null;
+  email: string;
   phone: string | null;
   note: string | null;
   can_drive_default: boolean;
