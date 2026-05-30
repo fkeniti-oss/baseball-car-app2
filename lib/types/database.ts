@@ -1,6 +1,8 @@
 export type AttendanceStatus = "参加" | "欠席" | "遅刻" | "未回答";
 export type EventType = "練習" | "試合" | "遠征";
 export type AllocationStatus = "draft" | "confirmed";
+export type StaffRole = "監督" | "コーチ" | "その他スタッフ";
+export type VehicleType = "regular" | "staff" | "cargo";
 
 export type EventRow = {
   id: string;
@@ -38,6 +40,23 @@ export type PlayerRow = {
   updated_at: string;
 };
 
+export type PlayerGuardianRow = {
+  id: string;
+  player_id: string;
+  guardian_id: string;
+  relationship_label: string | null;
+  display_order: 1 | 2;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlayerSiblingLinkRow = {
+  id: string;
+  player_id: string;
+  sibling_player_id: string;
+  created_at: string;
+};
+
 export type AttendanceRow = {
   id: string;
   event_id: string;
@@ -62,7 +81,34 @@ export type AllocationRow = {
   car_name: string;
   capacity: number;
   player_ids: string[];
+  staff_ids: string[];
+  passenger_guardian_ids: string[];
+  vehicle_type: VehicleType;
+  cargo_note: string | null;
   sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StaffRow = {
+  id: string;
+  name: string;
+  role: StaffRole;
+  phone: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type StaffAttendanceRow = {
+  id: string;
+  event_id: string;
+  staff_id: string;
+  attendance_status: AttendanceStatus;
+  can_drive: boolean;
+  capacity: number;
+  driver_name: string | null;
+  note: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -85,6 +131,16 @@ export type Database = {
         Insert: Partial<PlayerRow>;
         Update: Partial<PlayerRow>;
       };
+      player_guardians: {
+        Row: PlayerGuardianRow;
+        Insert: Partial<PlayerGuardianRow>;
+        Update: Partial<PlayerGuardianRow>;
+      };
+      player_sibling_links: {
+        Row: PlayerSiblingLinkRow;
+        Insert: Partial<PlayerSiblingLinkRow>;
+        Update: Partial<PlayerSiblingLinkRow>;
+      };
       attendance: {
         Row: AttendanceRow;
         Insert: Partial<AttendanceRow>;
@@ -94,6 +150,16 @@ export type Database = {
         Row: AllocationRow;
         Insert: Partial<AllocationRow>;
         Update: Partial<AllocationRow>;
+      };
+      staff: {
+        Row: StaffRow;
+        Insert: Partial<StaffRow>;
+        Update: Partial<StaffRow>;
+      };
+      staff_attendance: {
+        Row: StaffAttendanceRow;
+        Insert: Partial<StaffAttendanceRow>;
+        Update: Partial<StaffAttendanceRow>;
       };
     };
   };
