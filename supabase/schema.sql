@@ -19,8 +19,9 @@ create table if not exists public.events (
 create table if not exists public.guardians (
   id uuid primary key default gen_random_uuid(),
   name text not null,
-  email text not null unique,
+  email text unique,
   phone text,
+  note text,
   can_drive_default boolean not null default false,
   car_capacity_default integer not null default 4 check (car_capacity_default > 0),
   created_at timestamptz not null default now(),
@@ -31,12 +32,79 @@ create table if not exists public.players (
   id uuid primary key default gen_random_uuid(),
   guardian_id uuid references public.guardians(id) on delete set null,
   name text not null,
-  grade integer not null default 0,
+  grade text not null default '小1',
   family_group text not null default '',
   parent_name text not null default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+create table if not exists public.player_guardians (
+  id uuid primary key default gen_random_uuid(),
+  player_id uuid not null references public.players(id) on delete cascade,
+  guardian_id uuid not null references public.guardians(id) on delete cascade,
+  relationship_label text,
+  display_order integer not null check (display_order in (1, 2)),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (player_id, guardian_id),
+  unique (player_id, display_order)
+);
+
+create table if not exists public.player_sibling_links (
+  id uuid primary key default gen_random_uuid(),
+  player_id uuid not null references public.players(id) on delete cascade,
+  sibling_player_id uuid not null references public.players(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  check (player_id <> sibling_player_id),
+  unique (player_id, sibling_player_id)
+);
+
+alter table public.guardians
+add column if not exists note text;
+
+alter table public.guardians
+alter column email drop not null;
+
+alter table public.players
+alter column grade drop default;
+
+alter table public.players
+alter column grade type text
+using (
+  case
+    when grade::text in ('1', '2', '3', '4', '5', '6') then '小' || grade::text
+    when grade::text in ('7', '8', '9') then '中' || (grade::integer - 6)::text
+    when grade::text in ('10', '11', '12') then '高' || (grade::integer - 9)::text
+    when grade::text in ('年少', '年中', '年長', '小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3') then grade::text
+    else '小1'
+  end
+);
+
+alter table public.players
+alter column grade set default '小1';
+
+insert into public.player_guardians (player_id, guardian_id, relationship_label, display_order)
+select id, guardian_id, '保護者1', 1
+from public.players
+where guardian_id is not null
+on conflict (player_id, display_order) do nothing;
+
+insert into public.player_sibling_links (player_id, sibling_player_id)
+select player_id, sibling_player_id
+from (
+  select
+    p1.id as player_id,
+    p2.id as sibling_player_id,
+    row_number() over (partition by p1.id order by p2.name, p2.id) as sibling_order
+  from public.players p1
+  join public.players p2
+    on p1.id <> p2.id
+   and coalesce(nullif(p1.family_group, ''), p1.name) = coalesce(nullif(p2.family_group, ''), p2.name)
+  where coalesce(nullif(p1.family_group, ''), p1.name) <> p1.name
+) grouped_siblings
+where sibling_order <= 3
+on conflict (player_id, sibling_player_id) do nothing;
 
 create table if not exists public.attendance (
   id uuid primary key default gen_random_uuid(),
@@ -80,10 +148,122 @@ create table if not exists public.allocations (
   car_name text not null,
   capacity integer not null check (capacity > 0),
   player_ids uuid[] not null default '{}',
+  staff_ids uuid[] not null default '{}',
+  passenger_guardian_ids uuid[] not null default '{}',
+  vehicle_type text not null default 'regular' check (vehicle_type in ('regular', 'staff', 'cargo')),
+  cargo_note text,
   sort_order integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.allocations
+add column if not exists staff_ids uuid[] not null default '{}';
+
+alter table public.allocations
+add column if not exists passenger_guardian_ids uuid[] not null default '{}';
+
+alter table public.allocations
+add column if not exists vehicle_type text not null default 'regular';
+
+alter table public.allocations
+add column if not exists cargo_note text;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'allocations_vehicle_type_check'
+  ) then
+    alter table public.allocations
+    add constraint allocations_vehicle_type_check
+    check (vehicle_type in ('regular', 'staff', 'cargo'));
+  end if;
+end;
+$$;
+
+update public.allocations
+set vehicle_type = 'regular'
+where vehicle_type is null;
+
+create table if not exists public.staff (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  role text not null default 'コーチ' check (role in ('監督', 'コーチ', 'その他スタッフ')),
+  phone text,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.staff_attendance (
+  id uuid primary key default gen_random_uuid(),
+  event_id uuid not null references public.events(id) on delete cascade,
+  staff_id uuid not null references public.staff(id) on delete cascade,
+  attendance_status text not null default '未回答' check (attendance_status in ('参加', '欠席', '遅刻', '未回答')),
+  can_drive boolean not null default false,
+  capacity integer not null default 4 check (capacity > 0),
+  driver_name text,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (event_id, staff_id)
+);
+
+create index if not exists player_guardians_player_id_idx on public.player_guardians(player_id);
+create index if not exists player_guardians_guardian_id_idx on public.player_guardians(guardian_id);
+create index if not exists player_sibling_links_player_id_idx on public.player_sibling_links(player_id);
+create index if not exists player_sibling_links_sibling_player_id_idx on public.player_sibling_links(sibling_player_id);
+create index if not exists staff_attendance_event_id_idx on public.staff_attendance(event_id);
+create index if not exists staff_attendance_staff_id_idx on public.staff_attendance(staff_id);
+create index if not exists allocations_vehicle_type_idx on public.allocations(vehicle_type);
+
+create or replace function public.enforce_player_guardians_limit()
+returns trigger
+language plpgsql
+as $$
+begin
+  if (
+    select count(*)
+    from public.player_guardians
+    where player_id = new.player_id
+      and id <> coalesce(new.id, '00000000-0000-0000-0000-000000000000'::uuid)
+  ) >= 2 then
+    raise exception '1選手に登録できる保護者は最大2名です。';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_player_guardians_limit_trigger on public.player_guardians;
+create trigger enforce_player_guardians_limit_trigger
+before insert or update on public.player_guardians
+for each row execute function public.enforce_player_guardians_limit();
+
+create or replace function public.enforce_player_siblings_limit()
+returns trigger
+language plpgsql
+as $$
+begin
+  if (
+    select count(*)
+    from public.player_sibling_links
+    where player_id = new.player_id
+      and id <> coalesce(new.id, '00000000-0000-0000-0000-000000000000'::uuid)
+  ) >= 3 then
+    raise exception '1選手に登録できる兄弟は最大3名です。';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_player_siblings_limit_trigger on public.player_sibling_links;
+create trigger enforce_player_siblings_limit_trigger
+before insert or update on public.player_sibling_links
+for each row execute function public.enforce_player_siblings_limit();
 
 create or replace function public.touch_updated_at()
 returns trigger
@@ -110,6 +290,11 @@ create trigger touch_players_updated_at
 before update on public.players
 for each row execute function public.touch_updated_at();
 
+drop trigger if exists touch_player_guardians_updated_at on public.player_guardians;
+create trigger touch_player_guardians_updated_at
+before update on public.player_guardians
+for each row execute function public.touch_updated_at();
+
 drop trigger if exists touch_attendance_updated_at on public.attendance;
 create trigger touch_attendance_updated_at
 before update on public.attendance
@@ -120,11 +305,25 @@ create trigger touch_allocations_updated_at
 before update on public.allocations
 for each row execute function public.touch_updated_at();
 
+drop trigger if exists touch_staff_updated_at on public.staff;
+create trigger touch_staff_updated_at
+before update on public.staff
+for each row execute function public.touch_updated_at();
+
+drop trigger if exists touch_staff_attendance_updated_at on public.staff_attendance;
+create trigger touch_staff_attendance_updated_at
+before update on public.staff_attendance
+for each row execute function public.touch_updated_at();
+
 alter table public.events enable row level security;
 alter table public.guardians enable row level security;
 alter table public.players enable row level security;
+alter table public.player_guardians enable row level security;
+alter table public.player_sibling_links enable row level security;
 alter table public.attendance enable row level security;
 alter table public.allocations enable row level security;
+alter table public.staff enable row level security;
+alter table public.staff_attendance enable row level security;
 
 -- MVP運用方針:
 -- 管理者はSupabase Authログイン済みユーザー。保護者回答URLはanonでも入力可能にしています。
@@ -167,6 +366,32 @@ with check (true);
 drop policy if exists "public can read players for response links" on public.players;
 create policy "public can read players for response links"
 on public.players for select
+to anon, authenticated
+using (true);
+
+drop policy if exists "authenticated admins can manage player guardians" on public.player_guardians;
+create policy "authenticated admins can manage player guardians"
+on public.player_guardians for all
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "public can read player guardians for response links" on public.player_guardians;
+create policy "public can read player guardians for response links"
+on public.player_guardians for select
+to anon, authenticated
+using (true);
+
+drop policy if exists "authenticated admins can manage sibling links" on public.player_sibling_links;
+create policy "authenticated admins can manage sibling links"
+on public.player_sibling_links for all
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "public can read sibling links" on public.player_sibling_links;
+create policy "public can read sibling links"
+on public.player_sibling_links for select
 to anon, authenticated
 using (true);
 
@@ -216,39 +441,90 @@ using (
   )
 );
 
--- サンプルデータ。不要なら実行後に削除してください。
-insert into public.guardians (name, email, can_drive_default, car_capacity_default)
-values
-  ('太郎の保護者', 'taro-parent@example.com', true, 4),
-  ('湊の保護者', 'minato-parent@example.com', false, 4),
-  ('陽翔の保護者', 'haruto-parent@example.com', true, 5),
-  ('結翔の保護者', 'yuito-parent@example.com', true, 4)
-on conflict (email) do update set
-  name = excluded.name,
-  can_drive_default = excluded.can_drive_default,
-  car_capacity_default = excluded.car_capacity_default;
+drop policy if exists "authenticated admins can manage staff" on public.staff;
+create policy "authenticated admins can manage staff"
+on public.staff for all
+to authenticated
+using (true)
+with check (true);
 
-insert into public.players (name, grade, family_group, parent_name, guardian_id)
-select '太郎', 5, '佐藤', '太郎の保護者', id from public.guardians where email = 'taro-parent@example.com'
-on conflict do nothing;
-insert into public.players (name, grade, family_group, parent_name, guardian_id)
-select '蓮', 5, '佐藤', '太郎の保護者', id from public.guardians where email = 'taro-parent@example.com'
-on conflict do nothing;
-insert into public.players (name, grade, family_group, parent_name, guardian_id)
-select '湊', 4, '田中', '湊の保護者', id from public.guardians where email = 'minato-parent@example.com'
-on conflict do nothing;
-insert into public.players (name, grade, family_group, parent_name, guardian_id)
-select '陽翔', 6, '山本', '陽翔の保護者', id from public.guardians where email = 'haruto-parent@example.com'
-on conflict do nothing;
-insert into public.players (name, grade, family_group, parent_name, guardian_id)
-select '結翔', 4, '高橋', '結翔の保護者', id from public.guardians where email = 'yuito-parent@example.com'
-on conflict do nothing;
-insert into public.players (name, grade, family_group, parent_name, guardian_id)
-select '大翔', 4, '高橋', '結翔の保護者', id from public.guardians where email = 'yuito-parent@example.com'
-on conflict do nothing;
+drop policy if exists "public can read staff" on public.staff;
+create policy "public can read staff"
+on public.staff for select
+to anon, authenticated
+using (true);
 
-insert into public.events (title, event_type, starts_at, place)
-values
-  ('春季リーグ 第3戦', '試合', '2026-05-24 13:00+09', '市民球場'),
-  ('県外交流 遠征', '遠征', '2026-05-30 07:30+09', '中央スポーツ公園')
-on conflict do nothing;
+drop policy if exists "authenticated admins can manage staff attendance" on public.staff_attendance;
+create policy "authenticated admins can manage staff attendance"
+on public.staff_attendance for all
+to authenticated
+using (true)
+with check (true);
+
+drop policy if exists "public can read staff attendance" on public.staff_attendance;
+create policy "public can read staff attendance"
+on public.staff_attendance for select
+to anon, authenticated
+using (true);
+
+-- 既存環境に入っているデモデータを削除する場合のみ、以下をSQL Editorで個別に実行してください。
+-- delete from public.allocations
+-- where event_id in (
+--   select id from public.events
+--   where title in ('春季リーグ 第3戦', '県外交流 遠征')
+-- );
+--
+-- delete from public.attendance
+-- where event_id in (
+--   select id from public.events
+--   where title in ('春季リーグ 第3戦', '県外交流 遠征')
+-- )
+-- or player_id in (
+--   select p.id
+--   from public.players p
+--   left join public.guardians g on g.id = p.guardian_id
+--   where g.email in (
+--     'taro-parent@example.com',
+--     'minato-parent@example.com',
+--     'haruto-parent@example.com',
+--     'yuito-parent@example.com'
+--   )
+-- );
+--
+-- delete from public.players
+-- where guardian_id in (
+--   select id from public.guardians
+--   where email in (
+--     'taro-parent@example.com',
+--     'minato-parent@example.com',
+--     'haruto-parent@example.com',
+--     'yuito-parent@example.com'
+--   )
+-- )
+-- or (name, parent_name) in (
+--   ('太郎', '太郎の保護者'),
+--   ('蓮', '太郎の保護者'),
+--   ('湊', '湊の保護者'),
+--   ('陽翔', '陽翔の保護者'),
+--   ('結翔', '結翔の保護者'),
+--   ('大翔', '結翔の保護者')
+-- );
+--
+-- delete from public.events
+-- where title in ('春季リーグ 第3戦', '県外交流 遠征');
+--
+-- delete from public.guardians
+-- where email in (
+--   'taro-parent@example.com',
+--   'minato-parent@example.com',
+--   'haruto-parent@example.com',
+--   'yuito-parent@example.com'
+-- );
+
+-- 本番データ投入前にデモデータを全削除する場合のみ実行してください。
+-- 注意: 以下を実行すると events / guardians / players / attendance / allocations の全データが消えます。
+-- delete from public.allocations;
+-- delete from public.attendance;
+-- delete from public.players;
+-- delete from public.guardians;
+-- delete from public.events;
